@@ -1,0 +1,12 @@
+.DS_Store
+.cache/
+bin/
+dist/
+*.db
+*.db-shm
+*.db-wal
+*.out
+coverage.out
+tmp/
+exports/
+.open-agent-stream/

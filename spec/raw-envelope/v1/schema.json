@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-agent-stream.dev/spec/raw-envelope/v1/schema.json",
+  "title": "RawEnvelope",
+  "type": "object",
+  "required": [
+    "envelope_version",
+    "source_type",
+    "source_instance_id",
+    "artifact_id",
+    "cursor",
+    "observed_at",
+    "raw_kind",
+    "raw_payload",
+    "content_hash"
+  ],
+  "properties": {
+    "envelope_version": { "type": "integer", "const": 1 },
+    "envelope_id": { "type": "string" },
+    "source_type": { "type": "string" },
+    "source_instance_id": { "type": "string" },
+    "artifact_id": { "type": "string" },
+    "artifact_locator": { "type": "string" },
+    "project_locator": { "type": "string" },
+    "machine_id": { "type": "string" },
+    "cursor": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "type": "string" },
+        "value": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "source_timestamp": { "type": "string", "format": "date-time" },
+    "raw_kind": { "type": "string" },
+    "raw_payload": {},
+    "content_hash": { "type": "string" },
+    "parse_hints": {
+      "type": "object",
+      "properties": {
+        "source_session_key": { "type": "string" },
+        "project_hint": { "type": "string" },
+        "timestamp_hint": { "type": "string", "format": "date-time" },
+        "confidence": { "type": "number" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
+

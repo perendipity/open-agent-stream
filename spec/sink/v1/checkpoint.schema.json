@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-agent-stream.dev/spec/sink/v1/checkpoint.schema.json",
+  "title": "SinkCheckpoint",
+  "type": "object",
+  "required": ["sink_id", "last_ledger_offset", "acked_at"],
+  "properties": {
+    "sink_id": { "type": "string" },
+    "last_ledger_offset": { "type": "integer", "minimum": 0 },
+    "last_event_id": { "type": "string" },
+    "acked_at": { "type": "string", "format": "date-time" },
+    "delivery_count": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}
+

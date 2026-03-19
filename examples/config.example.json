@@ -1,0 +1,44 @@
+{
+  "version": "0.1",
+  "machine_id": "example-machine",
+  "state_path": ".open-agent-stream/state.db",
+  "ledger_path": ".open-agent-stream/ledger.db",
+  "batch_size": 64,
+  "sources": [
+    {
+      "instance_id": "codex-local",
+      "type": "codex_local",
+      "root": "./fixtures/sources/codex"
+    },
+    {
+      "instance_id": "claude-local",
+      "type": "claude_local",
+      "root": "./fixtures/sources/claude"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "stdout",
+      "type": "stdout",
+      "options": {}
+    }
+  ],
+  "privacy": {
+    "default": {
+      "drop_raw": false,
+      "redact_keys": ["api_key", "token", "secret"],
+      "regexes": [
+        {
+          "pattern": "Bearer\\s+[A-Za-z0-9._-]+",
+          "replacement": "Bearer [REDACTED]"
+        }
+      ]
+    },
+    "per_sink": {
+      "stdout": {
+        "drop_raw": false,
+        "redact_keys": ["api_key", "token", "secret"]
+      }
+    }
+  }
+}

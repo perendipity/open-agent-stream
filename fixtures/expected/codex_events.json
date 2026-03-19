@@ -1,0 +1,85 @@
+[
+  {
+    "event_version": 1,
+    "event_id": "evt_988a2269d9ac8382",
+    "source_type": "codex_local",
+    "source_instance_id": "codex-local",
+    "session_key": "sess_9eb012d547f9839f",
+    "sequence": 1,
+    "timestamp": "2026-03-19T18:00:00Z",
+    "kind": "session.started",
+    "actor": { "kind": "system", "name": "codex_local" },
+    "context": {
+      "source_type": "codex_local",
+      "project_key": "proj_4f50b67136464d7f",
+      "project_locator": "repo://open-agent-stream",
+      "source_session_key": "codex-session-1",
+      "capabilities": ["messages", "commands", "tool_calls", "file_ops", "usage"]
+    },
+    "payload": {
+      "message": "start",
+      "project": "repo://open-agent-stream",
+      "session_id": "codex-session-1",
+      "timestamp": "2026-03-19T18:00:00Z",
+      "type": "session.started"
+    },
+    "raw_ref": { "ledger_offset": 1, "envelope_id": "env_bd1f63b937a8dcc9" },
+    "parse_status": "ok"
+  },
+  {
+    "event_version": 1,
+    "event_id": "evt_94fe16c5c8a84a53",
+    "source_type": "codex_local",
+    "source_instance_id": "codex-local",
+    "session_key": "sess_9eb012d547f9839f",
+    "sequence": 2,
+    "timestamp": "2026-03-19T18:00:10Z",
+    "kind": "message.user",
+    "actor": { "kind": "user", "name": "user" },
+    "context": {
+      "source_type": "codex_local",
+      "project_key": "proj_4f50b67136464d7f",
+      "project_locator": "repo://open-agent-stream",
+      "source_session_key": "codex-session-1",
+      "capabilities": ["messages", "commands", "tool_calls", "file_ops", "usage"]
+    },
+    "payload": {
+      "project": "repo://open-agent-stream",
+      "session_id": "codex-session-1",
+      "text": "run the unit tests",
+      "timestamp": "2026-03-19T18:00:10Z",
+      "type": "message.user"
+    },
+    "raw_ref": { "ledger_offset": 2, "envelope_id": "env_8ba7488f3651ecbb" },
+    "parse_status": "ok"
+  },
+  {
+    "event_version": 1,
+    "event_id": "evt_eb8c09b03dc2eabe",
+    "source_type": "codex_local",
+    "source_instance_id": "codex-local",
+    "session_key": "sess_9eb012d547f9839f",
+    "sequence": 3,
+    "timestamp": "2026-03-19T18:00:15Z",
+    "kind": "command.finished",
+    "actor": { "kind": "tool", "name": "shell" },
+    "context": {
+      "source_type": "codex_local",
+      "project_key": "proj_4f50b67136464d7f",
+      "project_locator": "repo://open-agent-stream",
+      "source_session_key": "codex-session-1",
+      "capabilities": ["messages", "commands", "tool_calls", "file_ops", "usage"]
+    },
+    "payload": {
+      "command": "go test ./...",
+      "duration_ms": 1200,
+      "exit_code": 0,
+      "project": "repo://open-agent-stream",
+      "session_id": "codex-session-1",
+      "timestamp": "2026-03-19T18:00:15Z",
+      "type": "command.finished"
+    },
+    "raw_ref": { "ledger_offset": 3, "envelope_id": "env_4153180420466d5f" },
+    "parse_status": "ok"
+  }
+]

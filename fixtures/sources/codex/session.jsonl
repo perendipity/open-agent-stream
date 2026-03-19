@@ -1,0 +1,4 @@
+{"timestamp":"2026-03-19T18:00:00Z","type":"session.started","session_id":"codex-session-1","project":"repo://open-agent-stream","message":"start"}
+{"timestamp":"2026-03-19T18:00:10Z","type":"message.user","session_id":"codex-session-1","text":"run the unit tests","project":"repo://open-agent-stream"}
+{"timestamp":"2026-03-19T18:00:15Z","type":"command.finished","session_id":"codex-session-1","command":"go test ./...","exit_code":0,"duration_ms":1200,"project":"repo://open-agent-stream"}
+

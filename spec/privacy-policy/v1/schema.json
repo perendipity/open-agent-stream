@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-agent-stream.dev/spec/privacy-policy/v1/schema.json",
+  "title": "RedactionPolicyView",
+  "type": "object",
+  "required": ["policy_id", "drop_raw", "redacted_keys"],
+  "properties": {
+    "policy_id": { "type": "string" },
+    "drop_raw": { "type": "boolean" },
+    "redacted_keys": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "regex_count": { "type": "integer", "minimum": 0 },
+    "allowed_projects": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "denied_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}
+

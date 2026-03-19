@@ -1,0 +1,87 @@
+[
+  {
+    "event_version": 1,
+    "event_id": "evt_edf6a20aa6d36313",
+    "source_type": "claude_local",
+    "source_instance_id": "claude-local",
+    "session_key": "sess_a17adb67d91081d1",
+    "sequence": 1,
+    "timestamp": "2026-03-19T19:00:00Z",
+    "kind": "session.started",
+    "actor": { "kind": "system", "name": "claude_local" },
+    "context": {
+      "source_type": "claude_local",
+      "project_key": "proj_4f50b67136464d7f",
+      "project_locator": "repo://open-agent-stream",
+      "source_session_key": "claude-session-1",
+      "capabilities": ["messages", "commands", "tool_calls", "usage"]
+    },
+    "payload": {
+      "conversation_id": "claude-session-1",
+      "created_at": "2026-03-19T19:00:00Z",
+      "kind": "session_start",
+      "message": "start",
+      "workspace": "repo://open-agent-stream"
+    },
+    "raw_ref": { "ledger_offset": 1, "envelope_id": "env_62422dcee3936bf0" },
+    "parse_status": "ok"
+  },
+  {
+    "event_version": 1,
+    "event_id": "evt_cf4f1c2f454a794e",
+    "source_type": "claude_local",
+    "source_instance_id": "claude-local",
+    "session_key": "sess_a17adb67d91081d1",
+    "sequence": 2,
+    "timestamp": "2026-03-19T19:00:05Z",
+    "kind": "message.user",
+    "actor": { "kind": "user", "name": "user" },
+    "context": {
+      "source_type": "claude_local",
+      "project_key": "proj_4f50b67136464d7f",
+      "project_locator": "repo://open-agent-stream",
+      "source_session_key": "claude-session-1",
+      "capabilities": ["messages", "commands", "tool_calls", "usage"]
+    },
+    "payload": {
+      "content": "explain the failure",
+      "conversation_id": "claude-session-1",
+      "created_at": "2026-03-19T19:00:05Z",
+      "kind": "user",
+      "workspace": "repo://open-agent-stream"
+    },
+    "raw_ref": { "ledger_offset": 2, "envelope_id": "env_a715b3397ca4101e" },
+    "parse_status": "ok"
+  },
+  {
+    "event_version": 1,
+    "event_id": "evt_91c0f83e8b2c8fa2",
+    "source_type": "claude_local",
+    "source_instance_id": "claude-local",
+    "session_key": "sess_a17adb67d91081d1",
+    "sequence": 3,
+    "timestamp": "2026-03-19T19:00:20Z",
+    "kind": "tool.failed",
+    "actor": { "kind": "tool", "name": "shell" },
+    "context": {
+      "source_type": "claude_local",
+      "project_key": "proj_4f50b67136464d7f",
+      "project_locator": "repo://open-agent-stream",
+      "source_session_key": "claude-session-1",
+      "capabilities": ["messages", "commands", "tool_calls", "usage"]
+    },
+    "payload": {
+      "command": "go test ./...",
+      "conversation_id": "claude-session-1",
+      "created_at": "2026-03-19T19:00:20Z",
+      "duration_ms": 2200,
+      "exit_code": 1,
+      "kind": "tool_result",
+      "stderr": "--- FAIL: TestRouter",
+      "tool": "shell",
+      "workspace": "repo://open-agent-stream"
+    },
+    "raw_ref": { "ledger_offset": 3, "envelope_id": "env_3f1aac77a1150ce4" },
+    "parse_status": "ok"
+  }
+]

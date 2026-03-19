@@ -1,0 +1,4 @@
+{"created_at":"2026-03-19T19:00:00Z","kind":"session_start","conversation_id":"claude-session-1","workspace":"repo://open-agent-stream","message":"start"}
+{"created_at":"2026-03-19T19:00:05Z","kind":"user","conversation_id":"claude-session-1","content":"explain the failure","workspace":"repo://open-agent-stream"}
+{"created_at":"2026-03-19T19:00:20Z","kind":"tool_result","conversation_id":"claude-session-1","tool":"shell","command":"go test ./...","exit_code":1,"duration_ms":2200,"workspace":"repo://open-agent-stream","stderr":"--- FAIL: TestRouter"}
+
