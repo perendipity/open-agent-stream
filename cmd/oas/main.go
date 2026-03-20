@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
@@ -55,11 +57,28 @@ func runCommand(ctx context.Context, args []string) {
 func replayCommand(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("replay", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
+	sinkIDs := fs.String("sinks", "", "comma-separated sink IDs to replay to")
+	includeNonIdempotent := fs.Bool("include-non-idempotent", false, "include append-only and side-effecting sinks during replay")
+	dryRun := fs.Bool("dry-run", false, "print the replay sink selection plan and exit")
 	_ = fs.Parse(args)
 
 	runtime := mustRuntime(*configPath)
 	defer closeRuntime(ctx, runtime)
-	if err := runtime.Replay(ctx); err != nil {
+	options := supervisor.ReplayOptions{
+		SinkIDs:              splitCSV(*sinkIDs),
+		IncludeNonIdempotent: *includeNonIdempotent,
+	}
+	if *dryRun {
+		plan, err := runtime.ReplayPlan(options)
+		if err != nil {
+			fatal(err)
+		}
+		if err := writeJSON(os.Stdout, plan); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if err := runtime.ReplayWithOptions(ctx, options); err != nil {
 		fatal(err)
 	}
 }
@@ -146,4 +165,26 @@ func usage() {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
+}
+
+func splitCSV(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func writeJSON(target *os.File, value any) error {
+	encoder := json.NewEncoder(target)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
 }

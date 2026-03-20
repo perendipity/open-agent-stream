@@ -1,7 +1,9 @@
 package conformance
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,12 +16,14 @@ import (
 	"github.com/open-agent-stream/open-agent-stream/internal/redact"
 	"github.com/open-agent-stream/open-agent-stream/internal/router"
 	"github.com/open-agent-stream/open-agent-stream/internal/state"
+	"github.com/open-agent-stream/open-agent-stream/internal/supervisor"
 	"github.com/open-agent-stream/open-agent-stream/pkg/conformance"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sinkapi"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
 	claudesource "github.com/open-agent-stream/open-agent-stream/sources/claude"
 	codexsource "github.com/open-agent-stream/open-agent-stream/sources/codex"
+	_ "modernc.org/sqlite"
 )
 
 func TestFixtureNormalization(t *testing.T) {
@@ -119,6 +123,120 @@ func TestReplayDeterminism(t *testing.T) {
 	second := run()
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("replay mismatch\nfirst: %#v\nsecond: %#v", first, second)
+	}
+}
+
+func TestRuntimeReplaySkipsAppendOnlySinksByDefault(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg := runtimeFixtureConfig(t, t.TempDir())
+
+	runtime := mustRuntimeForTest(t, cfg)
+	if err := runtime.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(t, runtime)
+
+	initialLines := countJSONLLines(t, cfg.Sinks[0].Options["path"])
+	if initialLines != 3 {
+		t.Fatalf("expected 3 jsonl lines after run, got %d", initialLines)
+	}
+	initialEvents := countSQLiteEvents(t, cfg.Sinks[1].Options["path"])
+	if initialEvents != 3 {
+		t.Fatalf("expected 3 sqlite events after run, got %d", initialEvents)
+	}
+
+	replayRuntime := mustRuntimeForTest(t, cfg)
+	plan, err := replayRuntime.ReplayPlan(supervisor.ReplayOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Decisions) != 2 {
+		t.Fatalf("expected 2 replay decisions, got %d", len(plan.Decisions))
+	}
+	if plan.Decisions[0].SinkID != "jsonl-local" || plan.Decisions[0].Action != "skip" {
+		t.Fatalf("expected jsonl-local to be skipped by default, got %#v", plan.Decisions[0])
+	}
+	if plan.Decisions[1].SinkID != "sqlite-local" || plan.Decisions[1].Action != "include" {
+		t.Fatalf("expected sqlite-local to be included by default, got %#v", plan.Decisions[1])
+	}
+	if err := replayRuntime.ReplayWithOptions(ctx, supervisor.ReplayOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(t, replayRuntime)
+
+	linesAfterReplay := countJSONLLines(t, cfg.Sinks[0].Options["path"])
+	if linesAfterReplay != 3 {
+		t.Fatalf("expected jsonl sink to remain at 3 lines after default replay, got %d", linesAfterReplay)
+	}
+	eventsAfterReplay := countSQLiteEvents(t, cfg.Sinks[1].Options["path"])
+	if eventsAfterReplay != 3 {
+		t.Fatalf("expected sqlite sink to remain at 3 events after replay, got %d", eventsAfterReplay)
+	}
+}
+
+func TestRuntimeReplayIncludesAppendOnlyWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg := runtimeFixtureConfig(t, t.TempDir())
+
+	runtime := mustRuntimeForTest(t, cfg)
+	if err := runtime.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(t, runtime)
+
+	replayRuntime := mustRuntimeForTest(t, cfg)
+	options := supervisor.ReplayOptions{IncludeNonIdempotent: true}
+	plan, err := replayRuntime.ReplayPlan(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Decisions[0].Action != "include" {
+		t.Fatalf("expected jsonl-local to be included when explicitly requested, got %#v", plan.Decisions[0])
+	}
+	if err := replayRuntime.ReplayWithOptions(ctx, options); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(t, replayRuntime)
+
+	linesAfterReplay := countJSONLLines(t, cfg.Sinks[0].Options["path"])
+	if linesAfterReplay != 6 {
+		t.Fatalf("expected jsonl sink to contain duplicate deliveries after explicit replay, got %d lines", linesAfterReplay)
+	}
+	eventsAfterReplay := countSQLiteEvents(t, cfg.Sinks[1].Options["path"])
+	if eventsAfterReplay != 3 {
+		t.Fatalf("expected sqlite sink to stay idempotent after explicit replay, got %d events", eventsAfterReplay)
+	}
+}
+
+func TestRuntimeExportStable(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	cfg := runtimeFixtureConfig(t, t.TempDir())
+
+	runtime := mustRuntimeForTest(t, cfg)
+	if err := runtime.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(t, runtime)
+
+	exportRuntime := mustRuntimeForTest(t, cfg)
+	var first bytes.Buffer
+	var second bytes.Buffer
+	if err := exportRuntime.Export(ctx, &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := exportRuntime.Export(ctx, &second); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(t, exportRuntime)
+
+	if first.String() != second.String() {
+		t.Fatalf("expected export output to be stable across repeated runs\nfirst: %s\nsecond: %s", first.String(), second.String())
 	}
 }
 
@@ -322,6 +440,88 @@ type captureSink struct {
 	sinkType string
 	fail     bool
 	calls    int
+}
+
+func runtimeFixtureConfig(t *testing.T, dir string) config.Config {
+	t.Helper()
+
+	root := repoRoot(t)
+	return config.Config{
+		Version:    "0.1",
+		StatePath:  filepath.Join(dir, "state.db"),
+		LedgerPath: filepath.Join(dir, "ledger.db"),
+		BatchSize:  64,
+		Sources: []sourceapi.Config{
+			{
+				InstanceID: "codex-local",
+				Type:       "codex_local",
+				Root:       filepath.Join(root, "fixtures", "sources", "codex"),
+			},
+		},
+		Sinks: []sinkapi.Config{
+			{
+				ID:   "jsonl-local",
+				Type: "jsonl",
+				Options: map[string]string{
+					"path": filepath.Join(dir, "events.jsonl"),
+				},
+			},
+			{
+				ID:   "sqlite-local",
+				Type: "sqlite",
+				Options: map[string]string{
+					"path": filepath.Join(dir, "canonical.db"),
+				},
+			},
+		},
+	}
+}
+
+func mustRuntimeForTest(t *testing.T, cfg config.Config) *supervisor.Runtime {
+	t.Helper()
+
+	runtime, err := supervisor.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime
+}
+
+func closeRuntimeForTest(t *testing.T, runtime *supervisor.Runtime) {
+	t.Helper()
+
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countJSONLLines(t *testing.T, path string) int {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) == 0 {
+		return 0
+	}
+	return strings.Count(string(data), "\n")
+}
+
+func countSQLiteEvents(t *testing.T, path string) int {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT event_id) FROM canonical_events`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func (c *captureSink) ID() string   { return c.id }

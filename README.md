@@ -85,6 +85,21 @@ Then run:
 go run ./cmd/oas run -config ./examples/config.example.json
 ```
 
+Replay defaults to idempotent sinks only:
+
+```bash
+go run ./cmd/oas replay -config ./examples/config.example.json
+go run ./cmd/oas replay -config ./examples/config.example.json -dry-run
+go run ./cmd/oas replay -config ./examples/config.example.json -include-non-idempotent -sinks jsonl-local
+go run ./cmd/oas export -config ./examples/config.example.json -output ./exports/events.jsonl
+```
+
+Notes:
+
+- `sqlite` is replay-safe by default because it converges by `event_id`.
+- `jsonl` is an append-only delivery sink, so replay will duplicate lines if you explicitly include it.
+- `export` is the deterministic way to produce a JSONL snapshot from the ledger.
+
 ## How To Read This Repo
 
 1. Start with [`docs/README.md`](docs/README.md).
@@ -97,4 +112,3 @@ go run ./cmd/oas run -config ./examples/config.example.json
 
 - Code: Apache-2.0
 - Specs, docs, RFCs, and fixtures: CC BY 4.0
-
