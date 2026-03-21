@@ -58,6 +58,9 @@ Create a config file:
   "machine_id": "local-dev",
   "state_path": ".open-agent-stream/state.db",
   "ledger_path": ".open-agent-stream/ledger.db",
+  "max_storage_bytes": 104857600,
+  "prune_target_bytes": 83886080,
+  "min_free_bytes": 52428800,
   "poll_interval": "3s",
   "error_backoff": "10s",
   "max_consecutive_errors": 10,
@@ -102,9 +105,15 @@ go run ./cmd/oas export -config ./examples/config.example.json -output ./exports
 
 Notes:
 
+- Default persistent storage should live in a durable app state directory. If you omit
+  `state_path`/`ledger_path`, OAS defaults to `XDG_STATE_HOME/open-agent-stream` or
+  `~/.local/state/open-agent-stream`.
 - `sqlite` is replay-safe by default because it converges by `event_id`.
 - `jsonl` is an append-only delivery sink, so replay will duplicate lines if you explicitly include it.
 - `export` is the deterministic way to produce a JSONL snapshot from the ledger.
+- `max_storage_bytes` lets the daemon enforce a storage budget for its managed files.
+  When usage exceeds the budget, OAS prunes safely delivered ledger rows, compacts the
+  SQLite stores, and exits loudly if it still cannot get back under the configured limit.
 
 ## How To Read This Repo
 

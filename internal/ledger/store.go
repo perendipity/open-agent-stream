@@ -107,3 +107,26 @@ func (s *Store) ListAfter(offset int64, limit int) ([]Record, error) {
 	}
 	return records, rows.Err()
 }
+
+func (s *Store) DeleteThrough(offset int64) (int64, error) {
+	if offset <= 0 {
+		return 0, nil
+	}
+	result, err := s.db.Exec(`DELETE FROM raw_ledger WHERE offset <= ?`, offset)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (s *Store) Compact() error {
+	for _, statement := range []string{
+		`PRAGMA wal_checkpoint(TRUNCATE);`,
+		`VACUUM;`,
+	} {
+		if _, err := s.db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}

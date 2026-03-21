@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
@@ -36,10 +37,14 @@ type Config struct {
 	MachineID            string             `json:"machine_id,omitempty"`
 	StatePath            string             `json:"state_path,omitempty"`
 	LedgerPath           string             `json:"ledger_path,omitempty"`
+	DataDir              string             `json:"data_dir,omitempty"`
 	BatchSize            int                `json:"batch_size,omitempty"`
 	PollInterval         string             `json:"poll_interval,omitempty"`
 	ErrorBackoff         string             `json:"error_backoff,omitempty"`
 	MaxConsecutiveErrors int                `json:"max_consecutive_errors,omitempty"`
+	MaxStorageBytes      int64              `json:"max_storage_bytes,omitempty"`
+	PruneTargetBytes     int64              `json:"prune_target_bytes,omitempty"`
+	MinFreeBytes         int64              `json:"min_free_bytes,omitempty"`
 	Sources              []sourceapi.Config `json:"sources"`
 	Sinks                []sinkapi.Config   `json:"sinks"`
 	Privacy              PrivacyConfig      `json:"privacy,omitempty"`
@@ -76,6 +81,15 @@ func Validate(cfg Config) error {
 	if _, err := cfg.MaxConsecutiveErrorsValue(); err != nil {
 		errs = append(errs, fmt.Errorf("max_consecutive_errors: %w", err))
 	}
+	if _, err := cfg.MaxStorageBytesValue(); err != nil {
+		errs = append(errs, fmt.Errorf("max_storage_bytes: %w", err))
+	}
+	if _, err := cfg.PruneTargetBytesValue(); err != nil {
+		errs = append(errs, fmt.Errorf("prune_target_bytes: %w", err))
+	}
+	if _, err := cfg.MinFreeBytesValue(); err != nil {
+		errs = append(errs, fmt.Errorf("min_free_bytes: %w", err))
+	}
 	if len(cfg.Sources) == 0 {
 		errs = append(errs, errors.New("at least one source is required"))
 	}
@@ -108,11 +122,14 @@ func Validate(cfg Config) error {
 }
 
 func DefaultDataDir() string {
+	if xdgState := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); xdgState != "" {
+		return filepath.Join(xdgState, "open-agent-stream")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".open-agent-stream"
 	}
-	return filepath.Join(home, ".open-agent-stream")
+	return filepath.Join(home, ".local", "state", "open-agent-stream")
 }
 
 func EffectivePolicy(cfg Config, sinkID string) (Policy, schema.RedactionPolicyView) {
@@ -147,6 +164,9 @@ func applyDefaults(cfg *Config, raw map[string]json.RawMessage) {
 	if cfg.Version == "" {
 		cfg.Version = "0.1"
 	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = DefaultDataDir()
+	}
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 64
 	}
@@ -160,10 +180,13 @@ func applyDefaults(cfg *Config, raw map[string]json.RawMessage) {
 		cfg.MaxConsecutiveErrors = 10
 	}
 	if cfg.StatePath == "" {
-		cfg.StatePath = filepath.Join(DefaultDataDir(), "state.db")
+		cfg.StatePath = filepath.Join(cfg.DataDir, "state.db")
 	}
 	if cfg.LedgerPath == "" {
-		cfg.LedgerPath = filepath.Join(DefaultDataDir(), "ledger.db")
+		cfg.LedgerPath = filepath.Join(cfg.DataDir, "ledger.db")
+	}
+	if _, ok := raw["prune_target_bytes"]; !ok && cfg.MaxStorageBytes > 0 && cfg.PruneTargetBytes <= 0 {
+		cfg.PruneTargetBytes = cfg.MaxStorageBytes * 8 / 10
 	}
 	if cfg.Privacy.PerSink == nil {
 		cfg.Privacy.PerSink = map[string]Policy{}
@@ -183,6 +206,33 @@ func (cfg Config) MaxConsecutiveErrorsValue() (int, error) {
 		return 0, errors.New("must be greater than zero")
 	}
 	return cfg.MaxConsecutiveErrors, nil
+}
+
+func (cfg Config) MaxStorageBytesValue() (int64, error) {
+	if cfg.MaxStorageBytes < 0 {
+		return 0, errors.New("must be zero or greater")
+	}
+	return cfg.MaxStorageBytes, nil
+}
+
+func (cfg Config) PruneTargetBytesValue() (int64, error) {
+	if cfg.PruneTargetBytes < 0 {
+		return 0, errors.New("must be zero or greater")
+	}
+	if cfg.PruneTargetBytes > 0 && cfg.MaxStorageBytes <= 0 {
+		return 0, errors.New("requires max_storage_bytes to be set")
+	}
+	if cfg.MaxStorageBytes > 0 && cfg.PruneTargetBytes > 0 && cfg.PruneTargetBytes >= cfg.MaxStorageBytes {
+		return 0, errors.New("must be smaller than max_storage_bytes")
+	}
+	return cfg.PruneTargetBytes, nil
+}
+
+func (cfg Config) MinFreeBytesValue() (int64, error) {
+	if cfg.MinFreeBytes < 0 {
+		return 0, errors.New("must be zero or greater")
+	}
+	return cfg.MinFreeBytes, nil
 }
 
 func parsePositiveDuration(raw string, fallback time.Duration) (time.Duration, error) {

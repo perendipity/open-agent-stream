@@ -286,3 +286,27 @@ func (s *Store) IncrementSinkBatchAttempt(id int64, lastError string) error {
 	)
 	return err
 }
+
+func (s *Store) MinimumSinkCheckpointOffset() (int64, bool, error) {
+	row := s.db.QueryRow(`SELECT MIN(last_offset) FROM sink_checkpoints`)
+	var offset sql.NullInt64
+	if err := row.Scan(&offset); err != nil {
+		return 0, false, err
+	}
+	if !offset.Valid {
+		return 0, false, nil
+	}
+	return offset.Int64, true, nil
+}
+
+func (s *Store) Compact() error {
+	for _, statement := range []string{
+		`PRAGMA wal_checkpoint(TRUNCATE);`,
+		`VACUUM;`,
+	} {
+		if _, err := s.db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}

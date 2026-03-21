@@ -19,6 +19,7 @@ import (
 	"github.com/open-agent-stream/open-agent-stream/internal/router"
 	"github.com/open-agent-stream/open-agent-stream/internal/sinkmeta"
 	"github.com/open-agent-stream/open-agent-stream/internal/state"
+	"github.com/open-agent-stream/open-agent-stream/internal/storageguard"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sinkapi"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
@@ -39,6 +40,7 @@ type Runtime struct {
 	normalizer  *normalize.Service
 	router      *router.Router
 	adapters    map[string]sourceapi.Adapter
+	storage     *storageguard.Guard
 	initialized bool
 }
 
@@ -94,6 +96,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		ledger:     ledgerStore,
 		normalizer: normalize.NewService(stateStore),
 		router:     router.New(sinks, stateStore, redact.NewEngine(cfg)),
+		storage:    storageguard.New(cfg, ledgerStore, stateStore),
 		adapters: map[string]sourceapi.Adapter{
 			"codex_local":  codexsource.New(),
 			"claude_local": claudesource.New(),
@@ -173,6 +176,18 @@ func (r *Runtime) RunContinuously(ctx context.Context) error {
 			}
 			continue
 		}
+		if guardErr := r.enforceStorageGuard(ctx); guardErr != nil {
+			consecutiveFailures++
+			fmt.Fprintf(os.Stderr, "[%s] storage guard failed (%d/%d): %v\n",
+				time.Now().UTC().Format(time.RFC3339), consecutiveFailures, maxConsecutiveErrors, guardErr)
+			if consecutiveFailures >= maxConsecutiveErrors {
+				return fmt.Errorf("continuous mode aborted after %d consecutive failures: %w", consecutiveFailures, guardErr)
+			}
+			if waitErr := waitForNextCycle(ctx, errorBackoff); waitErr != nil {
+				return waitErr
+			}
+			continue
+		}
 		if consecutiveFailures > 0 {
 			fmt.Fprintf(os.Stderr, "[%s] continuous mode recovered after %d consecutive failure(s)\n",
 				time.Now().UTC().Format(time.RFC3339), consecutiveFailures)
@@ -185,6 +200,25 @@ func (r *Runtime) RunContinuously(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+func (r *Runtime) enforceStorageGuard(ctx context.Context) error {
+	if r.storage == nil {
+		return nil
+	}
+	offset, err := r.state.GetNormalizationOffset("canonical_v1")
+	if err != nil {
+		return err
+	}
+	report, err := r.storage.Enforce(ctx, offset)
+	if err != nil {
+		return err
+	}
+	if report.Enforced {
+		fmt.Fprintf(os.Stderr, "[%s] storage guard: reason=%s usage_bytes=%d free_bytes=%d pruned_records=%d safe_prune_offset=%d\n",
+			time.Now().UTC().Format(time.RFC3339), report.Reason, report.UsageBytes, report.FreeBytes, report.PrunedRecords, report.SafePruneOffset)
+	}
+	return nil
 }
 
 func (r *Runtime) RunCycle(ctx context.Context) (CycleResult, error) {

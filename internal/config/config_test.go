@@ -23,6 +23,12 @@ func TestApplyDefaultsSetsContinuousRunDefaults(t *testing.T) {
 	if cfg.MaxConsecutiveErrors != 10 {
 		t.Fatalf("MaxConsecutiveErrors = %d, want 10", cfg.MaxConsecutiveErrors)
 	}
+	if cfg.DataDir == "" {
+		t.Fatal("DataDir should be set")
+	}
+	if cfg.StatePath == "" || cfg.LedgerPath == "" {
+		t.Fatal("StatePath and LedgerPath should be set")
+	}
 }
 
 func TestApplyDefaultsDoesNotOverrideExplicitMaxConsecutiveErrors(t *testing.T) {
@@ -58,5 +64,33 @@ func TestValidateRejectsNonPositiveMaxConsecutiveErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "max_consecutive_errors") {
 		t.Fatalf("Validate error = %v, want mention of max_consecutive_errors", err)
+	}
+}
+
+func TestValidateRejectsPruneTargetNotBelowMaxStorage(t *testing.T) {
+	cfg := Config{
+		Version:              "0.1",
+		PollInterval:         "3s",
+		ErrorBackoff:         "10s",
+		MaxConsecutiveErrors: 10,
+		MaxStorageBytes:      100,
+		PruneTargetBytes:     100,
+		Sources: []sourceapi.Config{{
+			InstanceID: "source-1",
+			Type:       "codex_local",
+			Root:       "/tmp/source",
+		}},
+		Sinks: []sinkapi.Config{{
+			ID:   "stdout",
+			Type: "stdout",
+		}},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected Validate to fail")
+	}
+	if !strings.Contains(err.Error(), "prune_target_bytes") {
+		t.Fatalf("Validate error = %v, want mention of prune_target_bytes", err)
 	}
 }
