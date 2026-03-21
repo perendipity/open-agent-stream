@@ -28,6 +28,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		runCommand(ctx, os.Args[2:])
+	case "daemon":
+		daemonCommand(ctx, os.Args[2:])
 	case "replay":
 		replayCommand(ctx, os.Args[2:])
 	case "export":
@@ -50,6 +52,35 @@ func runCommand(ctx context.Context, args []string) {
 	runtime := mustRuntime(*configPath)
 	defer closeRuntime(ctx, runtime)
 	if err := runtime.Run(ctx); err != nil {
+		fatal(err)
+	}
+}
+
+func daemonCommand(ctx context.Context, args []string) {
+	if len(args) == 0 {
+		daemonUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "run":
+		daemonRunCommand(ctx, args[1:])
+	case "start":
+		daemonStartCommand(args[1:])
+	case "stop":
+		daemonStopCommand(args[1:])
+	case "status":
+		daemonStatusCommand(args[1:])
+	case "restart":
+		daemonRestartCommand(args[1:])
+	default:
+		daemonUsage()
+		os.Exit(2)
+	}
+}
+
+func daemonRunCommand(ctx context.Context, args []string) {
+	cfg, configPath := mustDaemonConfig(args, "daemon run")
+	if err := runDaemonForeground(ctx, cfg, configPath); err != nil && err != context.Canceled {
 		fatal(err)
 	}
 }
@@ -159,7 +190,11 @@ func closeRuntime(ctx context.Context, runtime *supervisor.Runtime) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: oas <run|replay|export|doctor|validate> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: oas <run|daemon|replay|export|doctor|validate> [flags]")
+}
+
+func daemonUsage() {
+	fmt.Fprintln(os.Stderr, "usage: oas daemon <run|start|stop|status|restart> -config <path>")
 }
 
 func fatal(err error) {

@@ -27,7 +27,7 @@ This repository is intentionally spec-first. The initial implementation includes
   - a SQLite-backed raw ledger and state store
   - a canonical normalizer
   - neutral sinks for `jsonl`, `sqlite`, `stdout`, and `webhook`
-  - CLI commands for `run`, `replay`, `export`, `doctor`, and `validate`
+  - CLI commands for `run`, `daemon`, `replay`, `export`, `doctor`, and `validate`
 
 ## Non-Goals
 
@@ -58,6 +58,9 @@ Create a config file:
   "machine_id": "local-dev",
   "state_path": ".open-agent-stream/state.db",
   "ledger_path": ".open-agent-stream/ledger.db",
+  "poll_interval": "3s",
+  "error_backoff": "10s",
+  "max_consecutive_errors": 10,
   "sources": [
     {
       "instance_id": "codex-local",
@@ -83,6 +86,9 @@ Then run:
 
 ```bash
 go run ./cmd/oas run -config ./examples/config.example.json
+go run ./cmd/oas daemon start -config ./examples/config.example.json
+go run ./cmd/oas daemon status -config ./examples/config.example.json
+go run ./cmd/oas daemon stop -config ./examples/config.example.json
 ```
 
 Replay defaults to idempotent sinks only:
