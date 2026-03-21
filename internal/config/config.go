@@ -57,7 +57,11 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
 	}
-	applyDefaults(&cfg)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return Config{}, err
+	}
+	applyDefaults(&cfg, raw)
 	return cfg, Validate(cfg)
 }
 
@@ -139,7 +143,7 @@ func EffectivePolicy(cfg Config, sinkID string) (Policy, schema.RedactionPolicyV
 	return policy, view
 }
 
-func applyDefaults(cfg *Config) {
+func applyDefaults(cfg *Config, raw map[string]json.RawMessage) {
 	if cfg.Version == "" {
 		cfg.Version = "0.1"
 	}
@@ -152,7 +156,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.ErrorBackoff == "" {
 		cfg.ErrorBackoff = (10 * time.Second).String()
 	}
-	if cfg.MaxConsecutiveErrors <= 0 {
+	if _, ok := raw["max_consecutive_errors"]; !ok && cfg.MaxConsecutiveErrors <= 0 {
 		cfg.MaxConsecutiveErrors = 10
 	}
 	if cfg.StatePath == "" {

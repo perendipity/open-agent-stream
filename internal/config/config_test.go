@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ import (
 
 func TestApplyDefaultsSetsContinuousRunDefaults(t *testing.T) {
 	cfg := Config{}
-	applyDefaults(&cfg)
+	applyDefaults(&cfg, nil)
 
 	if cfg.PollInterval != (3 * time.Second).String() {
 		t.Fatalf("PollInterval = %q, want %q", cfg.PollInterval, (3 * time.Second).String())
@@ -21,6 +22,16 @@ func TestApplyDefaultsSetsContinuousRunDefaults(t *testing.T) {
 	}
 	if cfg.MaxConsecutiveErrors != 10 {
 		t.Fatalf("MaxConsecutiveErrors = %d, want 10", cfg.MaxConsecutiveErrors)
+	}
+}
+
+func TestApplyDefaultsDoesNotOverrideExplicitMaxConsecutiveErrors(t *testing.T) {
+	cfg := Config{MaxConsecutiveErrors: 0}
+	applyDefaults(&cfg, map[string]json.RawMessage{
+		"max_consecutive_errors": []byte("0"),
+	})
+	if cfg.MaxConsecutiveErrors != 0 {
+		t.Fatalf("MaxConsecutiveErrors = %d, want explicit 0 preserved for validation", cfg.MaxConsecutiveErrors)
 	}
 }
 

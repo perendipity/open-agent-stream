@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -37,7 +38,8 @@ type daemonMetadata struct {
 func daemonStartCommand(args []string) {
 	cfg, configPath := mustDaemonConfig(args, "daemon start")
 	paths := daemonPathsFor(cfg)
-	if pid, running := readPID(paths.pidPath); running {
+	metadata, _ := readDaemonMetadata(paths.metaPath)
+	if pid, running := readPID(paths.pidPath, metadata); running {
 		fmt.Printf("Daemon already running (pid=%d)\n", pid)
 		return
 	}
@@ -70,8 +72,8 @@ func daemonStopCommand(args []string) {
 func daemonStatusCommand(args []string) {
 	cfg, _ := mustDaemonConfig(args, "daemon status")
 	paths := daemonPathsFor(cfg)
-	pid, running := readPID(paths.pidPath)
 	metadata, _ := readDaemonMetadata(paths.metaPath)
+	pid, running := readPID(paths.pidPath, metadata)
 
 	switch {
 	case running:
@@ -144,12 +146,22 @@ func daemonPathsFor(cfg config.Config) daemonPaths {
 	if instance == "" {
 		instance = "default"
 	}
-	prefix := "oas-daemon-" + instance
+	stateID := daemonStateKey(cfg.StatePath)
+	prefix := "oas-daemon-" + instance + "-" + stateID
 	return daemonPaths{
 		pidPath:  filepath.Join(baseDir, prefix+".pid"),
 		logPath:  filepath.Join(baseDir, prefix+".log"),
 		metaPath: filepath.Join(baseDir, prefix+".json"),
 	}
+}
+
+func daemonStateKey(statePath string) string {
+	base := sanitizeDaemonComponent(strings.TrimSuffix(filepath.Base(statePath), filepath.Ext(statePath)))
+	if base == "" {
+		base = "state"
+	}
+	sum := sha256.Sum256([]byte(statePath))
+	return fmt.Sprintf("%s-%x", base, sum[:4])
 }
 
 func sanitizeDaemonComponent(value string) string {
@@ -176,7 +188,7 @@ func runDaemonForeground(ctx context.Context, cfg config.Config, configPath stri
 	if err := os.MkdirAll(filepath.Dir(paths.pidPath), 0o755); err != nil {
 		return err
 	}
-	if existingPID := readExistingPID(paths.pidPath); existingPID > 0 {
+	if existingPID := readExistingPID(paths); existingPID > 0 {
 		return fmt.Errorf("daemon already running (pid=%d)", existingPID)
 	}
 	clearStaleDaemonFiles(paths)
@@ -236,7 +248,8 @@ func startDetachedDaemon(exePath, configPath, logPath string) (int, error) {
 }
 
 func stopDaemon(paths daemonPaths, timeout time.Duration) (int, error) {
-	pid, running := readPID(paths.pidPath)
+	metadata, _ := readDaemonMetadata(paths.metaPath)
+	pid, running := readPID(paths.pidPath, metadata)
 	if !running {
 		clearStaleDaemonFiles(paths)
 		return 0, nil
@@ -266,15 +279,16 @@ func stopDaemon(paths daemonPaths, timeout time.Duration) (int, error) {
 	return pid, nil
 }
 
-func readExistingPID(pidPath string) int {
-	pid, running := readPID(pidPath)
+func readExistingPID(paths daemonPaths) int {
+	metadata, _ := readDaemonMetadata(paths.metaPath)
+	pid, running := readPID(paths.pidPath, metadata)
 	if running {
 		return pid
 	}
 	return 0
 }
 
-func readPID(pidPath string) (int, bool) {
+func readPID(pidPath string, metadata daemonMetadata) (int, bool) {
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		return 0, false
@@ -283,7 +297,7 @@ func readPID(pidPath string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	return pid, processExists(pid)
+	return pid, daemonProcessMatches(pid, metadata)
 }
 
 func processExists(pid int) bool {
@@ -327,7 +341,38 @@ func clearDaemonFiles(paths daemonPaths) {
 }
 
 func clearStaleDaemonFiles(paths daemonPaths) {
-	if _, running := readPID(paths.pidPath); !running {
+	metadata, _ := readDaemonMetadata(paths.metaPath)
+	if _, running := readPID(paths.pidPath, metadata); !running {
 		clearDaemonFiles(paths)
 	}
+}
+
+func daemonProcessMatches(pid int, metadata daemonMetadata) bool {
+	if !processExists(pid) {
+		return false
+	}
+	if metadata.PID != pid || strings.TrimSpace(metadata.ConfigPath) == "" {
+		return false
+	}
+	cmdline, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(string(cmdline), "\x00")
+	wantConfig := strings.TrimSpace(metadata.ConfigPath)
+	hasDaemon := false
+	hasRun := false
+	hasConfig := false
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		switch part {
+		case "daemon":
+			hasDaemon = true
+		case "run":
+			hasRun = true
+		case wantConfig:
+			hasConfig = true
+		}
+	}
+	return hasDaemon && hasRun && hasConfig
 }
