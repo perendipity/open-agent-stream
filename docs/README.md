@@ -7,7 +7,9 @@ Read the repo in this order:
 3. [`architecture/pipeline.md`](architecture/pipeline.md)
 4. [`architecture/storage.md`](architecture/storage.md)
 5. [`governance/versioning.md`](governance/versioning.md)
-6. [`roadmap/milestones.md`](roadmap/milestones.md)
+6. [`governance/cli-standards.md`](governance/cli-standards.md)
+7. [`roadmap/cli-usability.md`](roadmap/cli-usability.md)
+8. [`roadmap/milestones.md`](roadmap/milestones.md)
 
 ## Structure
 
@@ -15,4 +17,3 @@ Read the repo in this order:
 - `/architecture`: the core pipeline and data/operational model
 - `/governance`: how the standard evolves
 - `/roadmap`: release framing and adoption criteria
-

@@ -70,10 +70,53 @@ func daemonStopCommand(args []string) {
 }
 
 func daemonStatusCommand(args []string) {
-	cfg, _ := mustDaemonConfig(args, "daemon status")
+	fs := flag.NewFlagSet("daemon status", flag.ExitOnError)
+	configPath := fs.String("config", "", "path to config JSON")
+	asJSON := fs.Bool("json", false, "print status as JSON")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `usage: oas daemon status -config <path> [flags]
+
+Show daemon status, metadata, and resolved control-file paths.
+
+Flags:
+`)
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, `
+Examples:
+  oas daemon status -config ./examples/config.example.json
+  oas daemon status -config ./examples/config.example.json -json
+`)
+	}
+	_ = fs.Parse(args)
+	if strings.TrimSpace(*configPath) == "" {
+		fatal(errors.New("config path is required"))
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fatal(err)
+	}
 	paths := daemonPathsFor(cfg)
 	metadata, _ := readDaemonMetadata(paths.metaPath)
 	pid, running := readPID(paths.pidPath, metadata)
+
+	payload := map[string]any{
+		"running":                running,
+		"pid":                    pid,
+		"started_at":             metadata.StartedAt,
+		"config_path":            metadata.ConfigPath,
+		"log_path":               paths.logPath,
+		"pid_path":               paths.pidPath,
+		"meta_path":              paths.metaPath,
+		"poll_interval":          metadata.PollInterval,
+		"error_backoff":          metadata.ErrorBackoff,
+		"max_consecutive_errors": metadata.MaxConsecutiveErrors,
+	}
+	if *asJSON {
+		if err := writeJSON(os.Stdout, payload); err != nil {
+			fatal(err)
+		}
+		return
+	}
 
 	switch {
 	case running:
@@ -125,6 +168,10 @@ func daemonRestartCommand(args []string) {
 func mustDaemonConfig(args []string, name string) (config.Config, string) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: oas %s -config <path>\n\nFlags:\n", name)
+		fs.PrintDefaults()
+	}
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*configPath) == "" {
 		fatal(errors.New("config path is required"))

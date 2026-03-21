@@ -88,9 +88,14 @@ Create a config file:
 Then run:
 
 ```bash
+go run ./cmd/oas --help
+go run ./cmd/oas config init -output ./oas.json
+go run ./cmd/oas config print -config ./oas.json
+go run ./cmd/oas config validate -config ./oas.json
 go run ./cmd/oas run -config ./examples/config.example.json
 go run ./cmd/oas daemon start -config ./examples/config.example.json
 go run ./cmd/oas daemon status -config ./examples/config.example.json
+go run ./cmd/oas daemon status -config ./examples/config.example.json -json
 go run ./cmd/oas daemon stop -config ./examples/config.example.json
 ```
 
@@ -108,6 +113,9 @@ Notes:
 - Default persistent storage should live in a durable app state directory. If you omit
   `state_path`/`ledger_path`, OAS defaults to `XDG_STATE_HOME/open-agent-stream` or
   `~/.local/state/open-agent-stream`.
+- `oas config init` writes a starter config with current defaults.
+- `oas config print` shows the effective config after defaults plus resolved daemon paths.
+- `oas <command> --help` is intended to be the primary discovery surface for common and advanced usage.
 - `sqlite` is replay-safe by default because it converges by `event_id`.
 - `jsonl` is an append-only delivery sink, so replay will duplicate lines if you explicitly include it.
 - `export` is the deterministic way to produce a JSONL snapshot from the ledger.
