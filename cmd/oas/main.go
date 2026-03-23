@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -31,6 +32,8 @@ func main() {
 	case "--help", "-h", "help":
 		usage()
 		return
+	case "version":
+		versionCommand()
 	case "run":
 		runCommand(ctx, os.Args[2:])
 	case "daemon":
@@ -152,6 +155,10 @@ func configInitCommand(args []string) {
 
 Write a starter config with documented defaults.
 
+The generated config is repo-demo-friendly by default: it points at the bundled
+fixture sources under ./fixtures/... and writes to a stdout sink. For real local
+use, edit the generated source roots before you run OAS.
+
 `)
 		printFlagSection(os.Stderr, fs, "Common flags", usageFlag{Name: "output", Placeholder: "<path|->"})
 		printExamples(os.Stderr,
@@ -229,11 +236,14 @@ func configValidateCommand(args []string) {
 func configValidateCommandWithName(args []string, commandName string) {
 	fs := flag.NewFlagSet(commandName, flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
-	rootPath := fs.String("root", ".", "repository root")
+	rootPath := fs.String("root", ".", "open-agent-stream repository root for fixture/conformance validation")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas %s -config <path> [flags]
 
-Validate the config file and fixture/conformance inputs.
+Validate the config file and the repo's fixture/conformance inputs.
+
+If you're using an installed OAS binary outside an open-agent-stream checkout,
+pass -root to a local checkout of this repo or skip fixture validation.
 
 `, commandName)
 		printFlagSection(os.Stderr, fs, "Common flags", usageFlag{Name: "config", Placeholder: "<path>"})
@@ -389,6 +399,26 @@ func validateCommand(args []string) {
 	configValidateCommandWithName(args, "validate")
 }
 
+func versionCommand() {
+	fmt.Fprintln(os.Stdout, versionString())
+}
+
+func versionString() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return versionStringForBuildInfo(info)
+	}
+	return versionStringForBuildInfo(nil)
+}
+
+func versionStringForBuildInfo(info *debug.BuildInfo) string {
+	if info != nil {
+		if version := strings.TrimSpace(info.Main.Version); version != "" && version != "(devel)" {
+			return "oas " + version
+		}
+	}
+	return "oas dev"
+}
+
 func mustRuntime(configPath string) *supervisor.Runtime {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -418,6 +448,7 @@ Usage:
   oas <command> [flags]
 
 Core commands:
+  version   Print the installed CLI version
   run       Run one ingestion/normalization/delivery cycle
   daemon    Manage continuous daemon mode
   config    Initialize, inspect, or validate config
@@ -434,6 +465,7 @@ Use:
   oas config --help
 
 Common starts:
+  oas version
   oas config init -output ./oas.json
   oas run -config ./oas.json
   oas daemon start -config ./oas.json

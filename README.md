@@ -48,14 +48,37 @@ This repository is intentionally spec-first. The initial implementation includes
 - `/sources`: built-in adapters
 - `/sinks`: built-in neutral sinks
 
+## Install
+
+For early adopters today, the canonical install path is:
+
+```bash
+go install github.com/open-agent-stream/open-agent-stream/cmd/oas@latest
+oas version
+```
+
+If you are evaluating a local checkout instead:
+
+```bash
+go install ./cmd/oas
+oas version
+```
+
+For the current distribution reality and PATH troubleshooting, see
+[`docs/adoption/install.md`](docs/adoption/install.md).
+
+If you want to run the fixture-backed demo below, use a local checkout of this
+repo so the starter config can point at `./fixtures/...`.
+
 ## Quickstart
 
-Run these commands from the repo root.
+The demo flow below uses repository fixtures, so run these commands from the
+repo root.
 
 ### 1. Generate a starter config
 
 ```bash
-go run ./cmd/oas config init -output ./oas.json
+oas config init -output ./oas.json
 ```
 
 This creates a starter config with current defaults, fixture-backed Codex and
@@ -65,20 +88,22 @@ reference config, see [`examples/config.example.json`](examples/config.example.j
 ### 2. Inspect and validate what OAS will actually use
 
 ```bash
-go run ./cmd/oas config print -config ./oas.json
-go run ./cmd/oas config validate -config ./oas.json
+oas config print -config ./oas.json
+oas config validate -config ./oas.json
 ```
 
 - `oas config print` shows a readable effective-config summary by default,
   including resolved state, ledger, daemon, and source-root paths.
 - add `-json` if you want structured output for automation.
-- `oas config validate` checks both the config and bundled fixtures before you
-  run anything.
+- `oas config validate` checks both the config and the repo's bundled fixtures
+  when you run it from an `open-agent-stream` checkout. If you're using an
+  installed binary elsewhere, either pass `-root /path/to/open-agent-stream` or
+  skip fixture validation.
 
 ### 3. Run one ingestion cycle end to end
 
 ```bash
-go run ./cmd/oas run -config ./oas.json
+oas run -config ./oas.json
 ```
 
 With the default starter config, this ingests the fixture sources in
@@ -89,7 +114,7 @@ and writes canonical events to stdout.
 
 ```bash
 mkdir -p ./exports
-go run ./cmd/oas export -config ./oas.json -output ./exports/events.jsonl
+oas export -config ./oas.json -output ./exports/events.jsonl
 wc -l ./exports/events.jsonl
 ```
 
@@ -101,16 +126,16 @@ events.
 For a built-in reviewer-oriented session summary:
 
 ```bash
-go run ./cmd/oas summary -input ./exports/events.jsonl -sort recent -limit 20
-go run ./cmd/oas summary -input ./exports/events.jsonl -failed
+oas summary -input ./exports/events.jsonl -sort recent -limit 20
+oas summary -input ./exports/events.jsonl -failed
 ```
 
 To drill into one interesting session from that summary:
 
 ```bash
-go run ./cmd/oas inspect -input ./exports/events.jsonl -session <session_key>
-go run ./cmd/oas inspect -input ./exports/events.jsonl -session <session_key> -command-status attention
-go run ./cmd/oas inspect -input ./exports/events.jsonl -session <session_key> -command-limit 0
+oas inspect -input ./exports/events.jsonl -session <session_key>
+oas inspect -input ./exports/events.jsonl -session <session_key> -command-status attention
+oas inspect -input ./exports/events.jsonl -session <session_key> -command-limit 0
 ```
 
 For a quick event-level skim:
@@ -147,10 +172,10 @@ What to look for:
 ### 6. Move from one-shot runs to continuous collection
 
 ```bash
-go run ./cmd/oas daemon start -config ./oas.json
-go run ./cmd/oas daemon status -config ./oas.json
-go run ./cmd/oas daemon status -config ./oas.json -json
-go run ./cmd/oas daemon stop -config ./oas.json
+oas daemon start -config ./oas.json
+oas daemon status -config ./oas.json
+oas daemon status -config ./oas.json -json
+oas daemon stop -config ./oas.json
 ```
 
 `oas daemon status` now surfaces current storage usage, configured limits, the
@@ -160,8 +185,8 @@ structured JSON view of runtime settings and resolved paths for automation.
 ### 7. Run operational checks
 
 ```bash
-go run ./cmd/oas doctor -config ./oas.json
-go run ./cmd/oas doctor -config ./oas.json -json
+oas doctor -config ./oas.json
+oas doctor -config ./oas.json -json
 ```
 
 `oas doctor` prints a readable table by default and supports `-json` for
@@ -170,12 +195,15 @@ automation.
 ### 8. Replay when you want to re-deliver ledger history
 
 ```bash
-go run ./cmd/oas replay -config ./oas.json
-go run ./cmd/oas replay -config ./oas.json -dry-run
+oas replay -config ./oas.json
+oas replay -config ./oas.json -dry-run
 ```
 
 Notes:
 
+- `go install github.com/open-agent-stream/open-agent-stream/cmd/oas@latest` is the primary install path today.
+- The demo starter config points at repository fixtures, so run the Quickstart from the repo root or change the generated source roots to your real local artifacts.
+- `oas validate` is repo-checkout-aware because it also validates bundled fixtures; for installed-binary use outside the repo, pass `-root /path/to/open-agent-stream` or skip that step.
 - Default persistent storage should live in a durable app state directory. If you omit
   `state_path`/`ledger_path`, OAS defaults to `XDG_STATE_HOME/open-agent-stream` or
   `~/.local/state/open-agent-stream`.
@@ -186,6 +214,7 @@ Notes:
 - `max_storage_bytes` lets the daemon enforce a storage budget for its managed files.
   When usage exceeds the budget, OAS prunes safely delivered ledger rows, compacts the
   SQLite stores, and exits loudly if it still cannot get back under the configured limit.
+- Before handing OAS to an early adopter, read [`docs/adoption/early-adopters.md`](docs/adoption/early-adopters.md) for current guardrails and evaluation expectations.
 
 ## Extending OAS
 
@@ -195,8 +224,16 @@ If you want to build a third-party adapter or sink, start with:
 - [`docs/governance/compatibility-matrix.md`](docs/governance/compatibility-matrix.md)
 
 Today the public contracts are ready for authoring against `/pkg`, but the
-stock CLI still wires only the built-in types, so external integrations
-currently land either via upstream contribution or a small custom CLI overlay.
+stock CLI still wires only the built-in types. In practice, that means:
+
+- upstream an adapter or sink here if you want it available in the stock `oas`
+  CLI, or
+- maintain a small custom CLI overlay if you want to move faster against the
+  published contracts before plugin loading exists in the stock runtime
+
+See [`docs/integrations/README.md`](docs/integrations/README.md) and
+[`rfcs/0002-external-plugin-runtime.md`](rfcs/0002-external-plugin-runtime.md)
+for the current boundary.
 
 ## How To Read This Repo
 

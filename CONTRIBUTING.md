@@ -26,6 +26,12 @@ Run:
 go test ./...
 ```
 
+Smoke-test the installed CLI flow:
+
+```bash
+scripts/smoke_cli.sh
+```
+
 Validate local fixture integrity:
 
 ```bash
