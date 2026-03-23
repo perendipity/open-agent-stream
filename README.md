@@ -180,7 +180,25 @@ oas daemon stop -config ./oas.json
 
 `oas daemon status` now surfaces current storage usage, configured limits, the
 most recent storage-guard event it can recover from the daemon log, and a more
-structured JSON view of runtime settings and resolved paths for automation.
+structured JSON view of runtime settings plus resolved status, lock, and
+control paths for automation.
+
+Daemon lifecycle is now daemon-owned rather than PID-probe-owned:
+
+- `<prefix>.json` is the live status record for the current daemon instance
+- `<prefix>.lock` is the exclusivity primitive that prevents duplicate starts
+- `<prefix>.control.d/` holds stop requests the daemon acknowledges on its next
+  control poll
+
+The JSON status output keeps `running` as a compatibility alias for `live`, and
+also exposes explicit `live`, `ready`, heartbeat freshness, lifecycle `state`,
+and the current `instance_id`. `start` waits for the matching instance to
+become ready before returning, and `restart` will fail rather than spawning a
+duplicate if the previous owner does not release the lock.
+
+Store daemon state on a local filesystem. Network-mounted state directories are
+not supported for daemon lifecycle control because lock semantics are not
+portable there.
 
 ### 7. Run operational checks
 

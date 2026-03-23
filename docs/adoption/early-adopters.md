@@ -79,8 +79,17 @@ The two main SQLite files are:
 - `state.db` for checkpoints, sink delivery metadata, and dead letters
 - `ledger.db` for the raw immutable envelope ledger
 
-If you run daemon mode, OAS also creates daemon PID, log, and metadata files in
-the same state directory.
+If you run daemon mode, OAS also creates daemon lifecycle files in the same
+state directory:
+
+- `oas-daemon-*.json` as the live daemon status record
+- `oas-daemon-*.lock` as the exclusivity lock that prevents duplicate starts
+- `oas-daemon-*.control.d/` for queued stop requests
+- `oas-daemon-*.pid` and `oas-daemon-*.log` as diagnostic artifacts
+
+Keep that state directory on a local filesystem. Network-mounted locations are
+not supported for daemon lifecycle control because lock behavior is not
+portable there.
 
 ## Guardrails for real evaluations
 
@@ -90,6 +99,9 @@ the same state directory.
   like JSONL will duplicate output if you explicitly replay to them
 - set a `max_storage_bytes` budget if you want the daemon to enforce a hard cap
   on managed files
+- use `oas daemon status` to distinguish lifecycle `state` from `live` and
+  `ready`; a stale heartbeat with a held lock means the old owner may be wedged,
+  so do not try to start a second daemon for the same config
 
 ## How to reset a local evaluation
 
@@ -98,7 +110,13 @@ resolved config output, including:
 
 - `state.db*`
 - `ledger.db*`
-- any `oas-daemon-*.pid`, `oas-daemon-*.log`, and `oas-daemon-*.json` files
+- any `oas-daemon-*.pid`, `oas-daemon-*.log`, `oas-daemon-*.json`,
+  `oas-daemon-*.lock`, and `oas-daemon-*.control.d/` artifacts
+
+If daemon mode was enabled, stop it first. If `oas daemon status` still shows a
+held lock with a stale heartbeat, treat that as a wedged owner and clear the
+state directory only after you have confirmed no real daemon process should
+still be running for that config.
 
 `oas config print -config ./oas.json` is the fastest way to confirm the exact
 paths a given config will use before you delete anything.
