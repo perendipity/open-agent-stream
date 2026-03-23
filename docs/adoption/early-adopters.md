@@ -26,7 +26,12 @@ platform:
 
 ## Good first evaluation flow
 
-The smoothest first run is:
+There are two good first-run paths, depending on how you're evaluating OAS.
+
+### A. Repo-backed demo flow
+
+If you have a local checkout of `open-agent-stream` and want deterministic demo
+data from the bundled fixtures, run this from the repo root:
 
 ```bash
 oas config init -output ./oas.json
@@ -39,6 +44,28 @@ oas summary -input ./exports/events.jsonl
 
 That path exercises config generation, config inspectability, validation,
 ingestion, export, and reviewer UX without requiring a daemon first.
+
+### B. Real local evaluation flow
+
+If you installed `oas` outside a repo checkout and want to point it at real
+local artifacts:
+
+1. run `oas config init -output ./oas.json`
+2. edit the generated source roots away from `./fixtures/...` and point them at
+   your real local Codex/Claude artifact directories
+3. run `oas config print -config ./oas.json`
+4. optionally run `oas doctor -config ./oas.json`
+5. run `oas run -config ./oas.json`
+6. export and review with `oas export`, `oas summary`, and `oas inspect`
+
+If you also want fixture/conformance validation, run:
+
+```bash
+oas validate -config ./oas.json -root /path/to/open-agent-stream
+```
+
+without `-root`, `oas validate` will fail outside an `open-agent-stream` repo
+checkout because it also validates the bundled fixtures.
 
 ## What OAS stores locally
 

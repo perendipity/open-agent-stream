@@ -5,8 +5,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/oas-smoke.XXXXXX")"
 keep_dir="${KEEP_SMOKE_DIR:-0}"
+daemon_started=0
 
 cleanup() {
+  if [[ "$daemon_started" == "1" && -x "$binary" && -f "$config_path" ]]; then
+    "$binary" daemon stop -config "$config_path" >/dev/null 2>&1 || true
+  fi
   if [[ "$keep_dir" != "1" ]]; then
     rm -rf "$work_dir"
   fi
@@ -84,6 +88,7 @@ PY
 "$binary" doctor -config "$config_path" >/dev/null
 "$binary" doctor -config "$config_path" -json >/dev/null
 "$binary" daemon start -config "$config_path" >/dev/null
+daemon_started=1
 
 for _ in $(seq 1 20); do
   if "$binary" daemon status -config "$config_path" -json >"$work_dir/daemon-status.json" 2>/dev/null; then
@@ -116,5 +121,6 @@ PY
 
 "$binary" daemon status -config "$config_path" >/dev/null
 "$binary" daemon stop -config "$config_path" >/dev/null
+daemon_started=0
 
 echo "CLI smoke test passed in $work_dir"

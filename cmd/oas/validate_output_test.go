@@ -43,6 +43,22 @@ func TestFormatValidationFailureIncludesIndexedConfigIssues(t *testing.T) {
 	}
 }
 
+func TestFormatValidationFailureIncludesRepoRootHintForMissingFixtures(t *testing.T) {
+	report := validationReport{
+		ConfigPath: "/tmp/oas.json",
+		RootPath:   "/tmp/not-a-repo",
+		FixtureIssues: []string{
+			"stat /tmp/not-a-repo/fixtures/expected/codex_events.json: no such file or directory",
+		},
+	}
+
+	text := formatValidationFailure(report)
+	want := "fixture validation expects an open-agent-stream repo checkout"
+	if !strings.Contains(text, want) {
+		t.Fatalf("formatted validation failure missing repo-root hint %q:\n%s", want, text)
+	}
+}
+
 func repoRootForTest(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))

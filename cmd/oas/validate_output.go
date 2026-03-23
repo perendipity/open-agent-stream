@@ -65,6 +65,10 @@ func formatValidationFailure(report validationReport) string {
 	}
 	appendBulletSection(&b, "Config issues", report.ConfigIssues)
 	appendBulletSection(&b, "Fixture issues", report.FixtureIssues)
+	if hint := validationHint(report); hint != "" {
+		b.WriteString("Hint:\n")
+		fmt.Fprintf(&b, "  %s\n", hint)
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -103,4 +107,21 @@ func flattenValidationIssues(err error) []string {
 		return nil
 	}
 	return []string{text}
+}
+
+func validationHint(report validationReport) string {
+	if needsRepoRootHint(report.FixtureIssues) {
+		return "fixture validation expects an open-agent-stream repo checkout. If you're using an installed OAS binary outside the repo, pass -root /path/to/open-agent-stream or skip fixture validation."
+	}
+	return ""
+}
+
+func needsRepoRootHint(issues []string) bool {
+	for _, issue := range issues {
+		text := strings.ToLower(strings.TrimSpace(issue))
+		if strings.Contains(text, "/fixtures/") && strings.Contains(text, "no such file or directory") {
+			return true
+		}
+	}
+	return false
 }

@@ -30,6 +30,11 @@ from a local checkout so the generated starter config can point at
 `./fixtures/...`. If you are evaluating OAS against real local artifacts
 instead, edit the generated source roots to match those directories.
 
+Also note that `oas validate` is repo-checkout-aware because it validates the
+bundled fixtures as well as the config. If you run it outside an
+`open-agent-stream` checkout, pass `-root /path/to/open-agent-stream` or skip
+that step.
+
 ## What to expect from distribution right now
 
 - there is not yet a Homebrew formula, apt package, or signed release archive

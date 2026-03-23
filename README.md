@@ -95,8 +95,10 @@ oas config validate -config ./oas.json
 - `oas config print` shows a readable effective-config summary by default,
   including resolved state, ledger, daemon, and source-root paths.
 - add `-json` if you want structured output for automation.
-- `oas config validate` checks both the config and bundled fixtures before you
-  run anything.
+- `oas config validate` checks both the config and the repo's bundled fixtures
+  when you run it from an `open-agent-stream` checkout. If you're using an
+  installed binary elsewhere, either pass `-root /path/to/open-agent-stream` or
+  skip fixture validation.
 
 ### 3. Run one ingestion cycle end to end
 
@@ -201,6 +203,7 @@ Notes:
 
 - `go install github.com/open-agent-stream/open-agent-stream/cmd/oas@latest` is the primary install path today.
 - The demo starter config points at repository fixtures, so run the Quickstart from the repo root or change the generated source roots to your real local artifacts.
+- `oas validate` is repo-checkout-aware because it also validates bundled fixtures; for installed-binary use outside the repo, pass `-root /path/to/open-agent-stream` or skip that step.
 - Default persistent storage should live in a durable app state directory. If you omit
   `state_path`/`ledger_path`, OAS defaults to `XDG_STATE_HOME/open-agent-stream` or
   `~/.local/state/open-agent-stream`.
