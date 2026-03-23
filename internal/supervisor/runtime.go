@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
 	"github.com/open-agent-stream/open-agent-stream/internal/health"
@@ -18,6 +20,7 @@ import (
 	"github.com/open-agent-stream/open-agent-stream/internal/router"
 	"github.com/open-agent-stream/open-agent-stream/internal/sinkmeta"
 	"github.com/open-agent-stream/open-agent-stream/internal/state"
+	"github.com/open-agent-stream/open-agent-stream/internal/storageguard"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sinkapi"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
@@ -30,14 +33,16 @@ import (
 )
 
 type Runtime struct {
-	cfg        config.Config
-	sinks      []sinkapi.Sink
-	sinkInfo   map[string]sinkmeta.Info
-	state      *state.Store
-	ledger     *ledger.Store
-	normalizer *normalize.Service
-	router     *router.Router
-	adapters   map[string]sourceapi.Adapter
+	cfg         config.Config
+	sinks       []sinkapi.Sink
+	sinkInfo    map[string]sinkmeta.Info
+	state       *state.Store
+	ledger      *ledger.Store
+	normalizer  *normalize.Service
+	router      *router.Router
+	adapters    map[string]sourceapi.Adapter
+	storage     *storageguard.Guard
+	initialized bool
 }
 
 type ReplayOptions struct {
@@ -57,6 +62,15 @@ type ReplayDecision struct {
 	ReplayClass string `json:"replay_class"`
 	Action      string `json:"action"`
 	Reason      string `json:"reason"`
+}
+
+type CycleResult struct {
+	EnvelopesIngested int `json:"envelopes_ingested"`
+	EventsDelivered   int `json:"events_delivered"`
+}
+
+func (r CycleResult) HasWork() bool {
+	return r.EnvelopesIngested > 0 || r.EventsDelivered > 0
 }
 
 func New(cfg config.Config) (*Runtime, error) {
@@ -83,6 +97,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		ledger:     ledgerStore,
 		normalizer: normalize.NewService(stateStore),
 		router:     router.New(sinks, stateStore, redact.NewEngine(cfg)),
+		storage:    storageguard.New(cfg, ledgerStore, stateStore),
 		adapters: map[string]sourceapi.Adapter{
 			"codex_local":  codexsource.New(),
 			"claude_local": claudesource.New(),
@@ -92,7 +107,7 @@ func New(cfg config.Config) (*Runtime, error) {
 
 func (r *Runtime) Close(ctx context.Context) error {
 	var errs []error
-	if r.router != nil {
+	if r.router != nil && r.initialized {
 		if err := r.router.Close(ctx); err != nil {
 			errs = append(errs, err)
 		}
@@ -114,14 +129,111 @@ func (r *Runtime) Close(ctx context.Context) error {
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
-	if err := r.router.Init(ctx); err != nil {
+	if err := r.init(ctx); err != nil {
 		return err
+	}
+	_, err := r.RunCycle(ctx)
+	return err
+}
+
+func (r *Runtime) RunContinuously(ctx context.Context) error {
+	if err := r.init(ctx); err != nil {
+		return err
+	}
+	pollInterval, err := r.cfg.PollIntervalValue()
+	if err != nil {
+		return err
+	}
+	errorBackoff, err := r.cfg.ErrorBackoffValue()
+	if err != nil {
+		return err
+	}
+	maxConsecutiveErrors, err := r.cfg.MaxConsecutiveErrorsValue()
+	if err != nil {
+		return err
+	}
+
+	consecutiveFailures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		result, err := r.RunCycle(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			consecutiveFailures++
+			fmt.Fprintf(os.Stderr, "[%s] continuous cycle failed (%d/%d): %v\n",
+				time.Now().UTC().Format(time.RFC3339), consecutiveFailures, maxConsecutiveErrors, err)
+			if consecutiveFailures >= maxConsecutiveErrors {
+				return fmt.Errorf("continuous mode aborted after %d consecutive failures: %w", consecutiveFailures, err)
+			}
+			if waitErr := waitForNextCycle(ctx, errorBackoff); waitErr != nil {
+				return waitErr
+			}
+			continue
+		}
+		if guardErr := r.enforceStorageGuard(ctx); guardErr != nil {
+			consecutiveFailures++
+			fmt.Fprintf(os.Stderr, "[%s] storage guard failed (%d/%d): %v\n",
+				time.Now().UTC().Format(time.RFC3339), consecutiveFailures, maxConsecutiveErrors, guardErr)
+			if consecutiveFailures >= maxConsecutiveErrors {
+				return fmt.Errorf("continuous mode aborted after %d consecutive failures: %w", consecutiveFailures, guardErr)
+			}
+			if waitErr := waitForNextCycle(ctx, errorBackoff); waitErr != nil {
+				return waitErr
+			}
+			continue
+		}
+		if consecutiveFailures > 0 {
+			fmt.Fprintf(os.Stderr, "[%s] continuous mode recovered after %d consecutive failure(s)\n",
+				time.Now().UTC().Format(time.RFC3339), consecutiveFailures)
+			consecutiveFailures = 0
+		}
+		if result.HasWork() {
+			continue
+		}
+		if err := waitForNextCycle(ctx, pollInterval); err != nil {
+			return err
+		}
+	}
+}
+
+func (r *Runtime) enforceStorageGuard(ctx context.Context) error {
+	if r.storage == nil {
+		return nil
+	}
+	offset, err := r.state.GetNormalizationOffset("canonical_v1")
+	if err != nil {
+		return err
+	}
+	report, err := r.storage.Enforce(ctx, offset)
+	if err != nil {
+		return err
+	}
+	if report.Enforced {
+		fmt.Fprintf(os.Stderr, "[%s] storage guard: reason=%s usage_bytes=%d free_bytes=%d pruned_records=%d safe_prune_offset=%d\n",
+			time.Now().UTC().Format(time.RFC3339), report.Reason, report.UsageBytes, report.FreeBytes, report.PrunedRecords, report.SafePruneOffset)
+	}
+	return nil
+}
+
+func (r *Runtime) RunCycle(ctx context.Context) (CycleResult, error) {
+	if err := r.init(ctx); err != nil {
+		return CycleResult{}, err
 	}
 	_ = r.router.DrainRetries(ctx)
-	if err := r.ingestSources(ctx); err != nil {
-		return err
+	ingested, ingestErr := r.ingestSources(ctx)
+	delivered, processErr := r.processLedger(ctx, false)
+	result := CycleResult{EnvelopesIngested: ingested, EventsDelivered: delivered}
+	if ingestErr != nil || processErr != nil {
+		return result, errors.Join(ingestErr, processErr)
 	}
-	return r.processLedger(ctx, false)
+	return result, nil
 }
 
 func (r *Runtime) Replay(ctx context.Context) error {
@@ -153,15 +265,16 @@ func (r *Runtime) ReplayWithOptions(ctx context.Context, options ReplayOptions) 
 		_ = replayRouter.Close(ctx)
 	}()
 	replayNormalizer := normalize.NewService(normalize.NewMemorySequenceStore())
-	return r.streamLedger(ctx, replayNormalizer, 0, func(offset int64, batch sinkapi.Batch) error {
+	_, err = r.streamLedger(ctx, replayNormalizer, 0, func(offset int64, batch sinkapi.Batch) error {
 		return replayRouter.Route(ctx, batch, offset, offset)
 	})
+	return err
 }
 
 func (r *Runtime) Export(ctx context.Context, writer io.Writer) error {
 	exportNormalizer := normalize.NewService(normalize.NewMemorySequenceStore())
 	encoder := json.NewEncoder(writer)
-	return r.streamLedger(ctx, exportNormalizer, 0, func(_ int64, batch sinkapi.Batch) error {
+	_, err := r.streamLedger(ctx, exportNormalizer, 0, func(_ int64, batch sinkapi.Batch) error {
 		for _, event := range batch.Events {
 			if err := encoder.Encode(event); err != nil {
 				return err
@@ -169,6 +282,7 @@ func (r *Runtime) Export(ctx context.Context, writer io.Writer) error {
 		}
 		return nil
 	})
+	return err
 }
 
 func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
@@ -194,6 +308,42 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 			checks = append(checks, health.CheckWritablePath(ctx, "sink-path:"+sinkCfg.ID, path))
 		}
 	}
+	if r.storage != nil {
+		report, err := r.storage.Inspect()
+		if err != nil {
+			checks = append(checks, health.Check{
+				Name:   "storage_guard",
+				Status: "fail",
+				Detail: err.Error(),
+			})
+		} else {
+			status := "ok"
+			if report.NeedsEnforcement {
+				status = "warn"
+			}
+			detail := fmt.Sprintf("usage_bytes=%d managed_paths=%d", report.UsageBytes, len(report.ManagedPaths))
+			if report.MaxStorageBytes > 0 {
+				detail += fmt.Sprintf(" max_storage_bytes=%d", report.MaxStorageBytes)
+			}
+			if report.DesiredUsageBytes > 0 {
+				detail += fmt.Sprintf(" desired_usage_bytes=%d", report.DesiredUsageBytes)
+			}
+			if report.FreeBytes > 0 {
+				detail += fmt.Sprintf(" free_bytes=%d", report.FreeBytes)
+			}
+			if report.MinFreeBytes > 0 {
+				detail += fmt.Sprintf(" min_free_bytes=%d", report.MinFreeBytes)
+			}
+			if report.Reason != "" {
+				detail += fmt.Sprintf(" reason=%s", report.Reason)
+			}
+			checks = append(checks, health.Check{
+				Name:   "storage_guard",
+				Status: status,
+				Detail: detail,
+			})
+		}
+	}
 	return checks, nil
 }
 
@@ -202,20 +352,39 @@ func (r *Runtime) ReplayPlan(options ReplayOptions) (ReplayPlan, error) {
 	return plan, err
 }
 
-func (r *Runtime) ingestSources(ctx context.Context) error {
+func (r *Runtime) init(ctx context.Context) error {
+	if r.initialized {
+		return nil
+	}
+	if err := r.router.Init(ctx); err != nil {
+		return err
+	}
+	r.initialized = true
+	return nil
+}
+
+func (r *Runtime) ingestSources(ctx context.Context) (int, error) {
+	total := 0
+	var errs []error
 	for _, sourceCfg := range r.cfg.Sources {
 		adapter, ok := r.adapters[sourceCfg.Type]
 		if !ok {
-			return errors.New("unknown source type: " + sourceCfg.Type)
+			return 0, errors.New("unknown source type: " + sourceCfg.Type)
 		}
 		artifacts, err := adapter.Discover(ctx, sourceCfg)
 		if err != nil {
-			return err
+			_ = r.state.RecordDeadLetter("source_discover", sourceCfg.Root, err.Error(), map[string]any{
+				"source_id": sourceCfg.InstanceID,
+				"root":      sourceCfg.Root,
+				"type":      sourceCfg.Type,
+			})
+			errs = append(errs, fmt.Errorf("discover %s: %w", sourceCfg.InstanceID, err))
+			continue
 		}
 		for _, artifact := range artifacts {
 			checkpoint, err := r.state.GetSourceCheckpoint(sourceCfg.InstanceID, artifact.ID)
 			if err != nil {
-				return err
+				return total, err
 			}
 			envelopes, nextCheckpoint, err := adapter.Read(ctx, sourceCfg, artifact, checkpoint)
 			if err != nil {
@@ -223,26 +392,28 @@ func (r *Runtime) ingestSources(ctx context.Context) error {
 					"source_id":   sourceCfg.InstanceID,
 					"artifact_id": artifact.ID,
 				})
+				errs = append(errs, fmt.Errorf("read %s/%s: %w", sourceCfg.InstanceID, artifact.ID, err))
 				continue
 			}
 			for _, envelope := range envelopes {
 				if _, err := r.ledger.Append(envelope); err != nil {
-					return err
+					return total, err
 				}
+				total++
 			}
 			if err := r.state.PutSourceCheckpoint(sourceCfg.InstanceID, artifact.ID, nextCheckpoint); err != nil {
-				return err
+				return total, err
 			}
 		}
 	}
-	return nil
+	return total, errors.Join(errs...)
 }
 
-func (r *Runtime) processLedger(ctx context.Context, replay bool) error {
+func (r *Runtime) processLedger(ctx context.Context, replay bool) (int, error) {
 	offsetName := "canonical_v1"
 	startOffset, err := r.state.GetNormalizationOffset(offsetName)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if replay {
 		startOffset = 0
@@ -255,20 +426,21 @@ func (r *Runtime) processLedger(ctx context.Context, replay bool) error {
 	})
 }
 
-func (r *Runtime) streamLedger(ctx context.Context, normalizer *normalize.Service, after int64, consumer func(offset int64, batch sinkapi.Batch) error) error {
+func (r *Runtime) streamLedger(ctx context.Context, normalizer *normalize.Service, after int64, consumer func(offset int64, batch sinkapi.Batch) error) (int, error) {
 	current := after
+	processed := 0
 	for {
 		records, err := r.ledger.ListAfter(current, r.cfg.BatchSize)
 		if err != nil {
-			return err
+			return processed, err
 		}
 		if len(records) == 0 {
-			return nil
+			return processed, nil
 		}
 		for _, record := range records {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return processed, ctx.Err()
 			default:
 			}
 			event, err := normalizer.Normalize(record)
@@ -282,9 +454,10 @@ func (r *Runtime) streamLedger(ctx context.Context, normalizer *normalize.Servic
 				RawEnvelopes: []schema.RawEnvelope{record.Envelope},
 			}
 			if err := consumer(record.Offset, batch); err != nil {
-				return err
+				return processed, err
 			}
 			current = record.Offset
+			processed++
 		}
 	}
 }
@@ -312,10 +485,34 @@ func buildSinks(configs []sinkapi.Config) ([]sinkapi.Sink, map[string]sinkmeta.I
 	return sinks, info, nil
 }
 
-func WriteChecks(writer io.Writer, checks []health.Check) error {
+func WriteChecksJSON(writer io.Writer, checks []health.Check) error {
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(checks)
+}
+
+func WriteChecksTable(writer io.Writer, checks []health.Check) error {
+	table := tabwriter.NewWriter(writer, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(table, "NAME\tSTATUS\tDETAIL"); err != nil {
+		return err
+	}
+	for _, check := range checks {
+		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\n", check.Name, check.Status, check.Detail); err != nil {
+			return err
+		}
+	}
+	return table.Flush()
+}
+
+func waitForNextCycle(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func EnsureOutputWriter(path string) (io.WriteCloser, error) {

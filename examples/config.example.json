@@ -3,7 +3,13 @@
   "machine_id": "example-machine",
   "state_path": ".open-agent-stream/state.db",
   "ledger_path": ".open-agent-stream/ledger.db",
+  "max_storage_bytes": 104857600,
+  "prune_target_bytes": 83886080,
+  "min_free_bytes": 52428800,
   "batch_size": 64,
+  "poll_interval": "3s",
+  "error_backoff": "10s",
+  "max_consecutive_errors": 10,
   "sources": [
     {
       "instance_id": "codex-local",

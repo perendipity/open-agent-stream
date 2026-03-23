@@ -8,6 +8,8 @@
 - Any change to `/spec` must include executable coverage in `/conformance` or Go tests that exercise the same contract.
 - Any normative change must include a migration note, either in the affected spec version or an RFC.
 - Breaking changes require a new versioned spec directory.
+- Any CLI-facing change must meet the bar in [`docs/governance/cli-standards.md`](docs/governance/cli-standards.md).
+- CLI-facing changes should update help/examples/docs in the same PR and add regression coverage for critical output when practical.
 
 ## Workflow
 
@@ -27,6 +29,5 @@ go test ./...
 Validate local fixture integrity:
 
 ```bash
-go run ./cmd/oas validate
+go run ./cmd/oas validate -config ./examples/config.example.json
 ```
-
