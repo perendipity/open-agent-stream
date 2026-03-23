@@ -17,6 +17,53 @@ cleanup() {
 }
 trap cleanup EXIT
 
+wait_for_daemon_status() {
+  local expect_live="$1"
+  local expect_ready="$2"
+  local attempts="${3:-20}"
+
+  for _ in $(seq 1 "$attempts"); do
+    if "$binary" daemon status -config "$config_path" -json >"$work_dir/daemon-status.json" 2>/dev/null; then
+      if python3 - "$work_dir/daemon-status.json" "$expect_live" "$expect_ready" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    status = json.load(handle)
+
+expect_live = sys.argv[2] == "true"
+expect_ready = sys.argv[3] == "true"
+
+live = bool(status.get("live"))
+ready = bool(status.get("ready"))
+running = bool(status.get("running"))
+
+if live == expect_live and ready == expect_ready and running == live:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+      then
+        return 0
+      fi
+    fi
+    sleep 0.5
+  done
+
+  return 1
+}
+
+current_instance_id() {
+  python3 - "$work_dir/daemon-status.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    status = json.load(handle)
+
+print(status.get("instance_id", ""))
+PY
+}
+
 bin_dir="$work_dir/bin"
 binary="$bin_dir/oas"
 config_path="$work_dir/oas.json"
@@ -90,37 +137,29 @@ PY
 "$binary" daemon start -config "$config_path" >/dev/null
 daemon_started=1
 
-for _ in $(seq 1 20); do
-  if "$binary" daemon status -config "$config_path" -json >"$work_dir/daemon-status.json" 2>/dev/null; then
-    if python3 - "$work_dir/daemon-status.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    status = json.load(handle)
-
-raise SystemExit(0 if status.get("running") else 1)
-PY
-    then
-      break
-    fi
-  fi
-  sleep 0.5
-done
-
-python3 - "$work_dir/daemon-status.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    status = json.load(handle)
-
-if not status.get("running"):
-    raise SystemExit("daemon did not report running status")
-PY
+wait_for_daemon_status true true
+first_instance_id="$(current_instance_id)"
+if [[ -z "$first_instance_id" ]]; then
+  echo "daemon status did not report an instance_id after start" >&2
+  exit 1
+fi
 
 "$binary" daemon status -config "$config_path" >/dev/null
+"$binary" daemon restart -config "$config_path" >/dev/null
+wait_for_daemon_status true true
+
+second_instance_id="$(current_instance_id)"
+if [[ -z "$second_instance_id" ]]; then
+  echo "daemon status did not report an instance_id after restart" >&2
+  exit 1
+fi
+if [[ "$first_instance_id" == "$second_instance_id" ]]; then
+  echo "daemon restart did not rotate the instance_id" >&2
+  exit 1
+fi
+
 "$binary" daemon stop -config "$config_path" >/dev/null
 daemon_started=0
+wait_for_daemon_status false false 10
 
 echo "CLI smoke test passed in $work_dir"

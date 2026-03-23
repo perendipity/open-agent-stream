@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,8 +14,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,20 +26,65 @@ import (
 	"github.com/open-agent-stream/open-agent-stream/internal/supervisor"
 )
 
+const (
+	daemonStatusSchemaVersion   = 1
+	daemonControlSchemaVersion  = 1
+	daemonHeartbeatInterval     = 5 * time.Second
+	daemonControlPollInterval   = 1 * time.Second
+	daemonStatusStaleThreshold  = daemonHeartbeatInterval * 4
+	daemonLifecyclePollInterval = 100 * time.Millisecond
+	daemonStartReadyTimeout     = 10 * time.Second
+)
+
+const (
+	daemonStateStarting = "starting"
+	daemonStateRunning  = "running"
+	daemonStateStopping = "stopping"
+	daemonStateStopped  = "stopped"
+	daemonStateFailed   = "failed"
+)
+
+const daemonInstanceIDEnv = "OAS_DAEMON_INSTANCE_ID"
+
+var (
+	errDaemonLockHeld        = errors.New("daemon lock already held")
+	daemonDisableProcessTest bool
+)
+
 type daemonPaths struct {
-	pidPath  string
-	logPath  string
-	metaPath string
+	pidPath        string
+	logPath        string
+	statusPath     string
+	metaPath       string
+	lockPath       string
+	controlDirPath string
 }
 
-type daemonMetadata struct {
-	PID                  int    `json:"pid"`
-	ConfigPath           string `json:"config_path"`
-	LogPath              string `json:"log_path"`
-	StartedAt            string `json:"started_at"`
-	PollInterval         string `json:"poll_interval"`
-	ErrorBackoff         string `json:"error_backoff"`
-	MaxConsecutiveErrors int    `json:"max_consecutive_errors"`
+type daemonStatusRecord struct {
+	SchemaVersion          int    `json:"schema_version,omitempty"`
+	InstanceID             string `json:"instance_id,omitempty"`
+	PID                    int    `json:"pid,omitempty"`
+	ConfigPath             string `json:"config_path,omitempty"`
+	LogPath                string `json:"log_path,omitempty"`
+	StartedAt              string `json:"started_at,omitempty"`
+	ReadyAt                string `json:"ready_at,omitempty"`
+	HeartbeatAt            string `json:"heartbeat_at,omitempty"`
+	LastTransitionAt       string `json:"last_transition_at,omitempty"`
+	State                  string `json:"state,omitempty"`
+	LastError              string `json:"last_error,omitempty"`
+	LastProcessedRequestID string `json:"last_processed_request_id,omitempty"`
+	LastControlAction      string `json:"last_control_action,omitempty"`
+	PollInterval           string `json:"poll_interval,omitempty"`
+	ErrorBackoff           string `json:"error_backoff,omitempty"`
+	MaxConsecutiveErrors   int    `json:"max_consecutive_errors,omitempty"`
+}
+
+type daemonControlRequest struct {
+	SchemaVersion    int    `json:"schema_version,omitempty"`
+	RequestID        string `json:"request_id,omitempty"`
+	TargetInstanceID string `json:"target_instance_id,omitempty"`
+	Action           string `json:"action,omitempty"`
+	RequestedAt      string `json:"requested_at,omitempty"`
 }
 
 type daemonStorageStatus struct {
@@ -65,15 +114,28 @@ type daemonStorageActivity struct {
 }
 
 type daemonStatusView struct {
-	State        string               `json:"state"`
-	Running      bool                 `json:"running"`
-	StalePID     bool                 `json:"stale_pid,omitempty"`
-	PID          int                  `json:"pid,omitempty"`
-	StartedAt    string               `json:"started_at,omitempty"`
-	Runtime      daemonRuntimeStatus  `json:"runtime"`
-	Paths        daemonResolvedPaths  `json:"paths"`
-	Storage      *daemonStorageStatus `json:"storage,omitempty"`
-	StorageError string               `json:"storage_error,omitempty"`
+	SchemaVersion          int                  `json:"schema_version,omitempty"`
+	InstanceID             string               `json:"instance_id,omitempty"`
+	State                  string               `json:"state"`
+	Running                bool                 `json:"running"`
+	Live                   bool                 `json:"live"`
+	Ready                  bool                 `json:"ready"`
+	Stale                  bool                 `json:"stale,omitempty"`
+	HeartbeatFresh         bool                 `json:"heartbeat_fresh,omitempty"`
+	StatusReason           string               `json:"status_reason,omitempty"`
+	StalePID               bool                 `json:"stale_pid,omitempty"`
+	PID                    int                  `json:"pid,omitempty"`
+	StartedAt              string               `json:"started_at,omitempty"`
+	ReadyAt                string               `json:"ready_at,omitempty"`
+	HeartbeatAt            string               `json:"heartbeat_at,omitempty"`
+	LastTransitionAt       string               `json:"last_transition_at,omitempty"`
+	LastError              string               `json:"last_error,omitempty"`
+	LastProcessedRequestID string               `json:"last_processed_request_id,omitempty"`
+	LastControlAction      string               `json:"last_control_action,omitempty"`
+	Runtime                daemonRuntimeStatus  `json:"runtime"`
+	Paths                  daemonResolvedPaths  `json:"paths"`
+	Storage                *daemonStorageStatus `json:"storage,omitempty"`
+	StorageError           string               `json:"storage_error,omitempty"`
 }
 
 type daemonRuntimeStatus struct {
@@ -84,38 +146,94 @@ type daemonRuntimeStatus struct {
 }
 
 type daemonResolvedPaths struct {
-	StatePath  string `json:"state_path"`
-	LedgerPath string `json:"ledger_path"`
-	PIDPath    string `json:"pid_path"`
-	LogPath    string `json:"log_path"`
-	MetaPath   string `json:"meta_path"`
+	StatePath      string `json:"state_path"`
+	LedgerPath     string `json:"ledger_path"`
+	PIDPath        string `json:"pid_path"`
+	LogPath        string `json:"log_path"`
+	StatusPath     string `json:"status_path"`
+	MetaPath       string `json:"meta_path"`
+	LockPath       string `json:"lock_path"`
+	ControlDirPath string `json:"control_dir_path"`
+}
+
+type daemonStatusSnapshot struct {
+	Record         daemonStatusRecord
+	HasRecord      bool
+	RecordErr      error
+	LockHeld       bool
+	HeartbeatFresh bool
+	Live           bool
+	Ready          bool
+	Stale          bool
+	StatusReason   string
+	PID            int
+}
+
+type daemonStopResult struct {
+	PID        int
+	InstanceID string
+	WasLive    bool
+}
+
+type daemonLock struct {
+	file *os.File
+}
+
+type daemonStatusManager struct {
+	mu     sync.Mutex
+	paths  daemonPaths
+	record daemonStatusRecord
+}
+
+type daemonConfigHelp struct {
+	Description string
+	Notes       []string
+	Examples    []string
 }
 
 func daemonStartCommand(args []string) {
 	cfg, configPath := mustDaemonConfig(args, "daemon start", daemonConfigHelp{
-		Description: "Start a detached daemon process and return immediately.",
+		Description: "Start a detached daemon process and return after it reports ready.",
 		Notes: []string{
-			"Safe to rerun: if the daemon already appears to be running for this config, OAS prints the existing PID instead of starting a second copy.",
+			"Safe to rerun: if the daemon lock is already held for this config, OAS will not start a second copy.",
 			"Detached mode writes stdout/stderr to the resolved daemon log path.",
+			"Daemon lifecycle state must live on a local filesystem; network-mounted state directories are not supported.",
 		},
 		Examples: []string{
 			"oas daemon start -config ./examples/config.example.json",
 		},
 	})
 	paths := daemonPathsFor(cfg)
-	metadata, _ := readDaemonMetadata(paths.metaPath)
-	if pid, running := readPID(paths.pidPath, metadata); running {
-		fmt.Printf("Daemon already running (pid=%d)\n", pid)
+	snapshot, err := inspectDaemonSnapshot(paths)
+	if err != nil {
+		fatal(err)
+	}
+	if snapshot.LockHeld {
+		if snapshot.Stale || snapshot.RecordErr != nil || !snapshot.HasRecord {
+			fatal(fmt.Errorf("daemon lock is held for this config but the active owner is unhealthy; refusing to start a duplicate"))
+		}
+		if snapshot.PID > 0 {
+			fmt.Printf("Daemon already running (pid=%d)\n", snapshot.PID)
+		} else {
+			fmt.Println("Daemon already running.")
+		}
 		return
 	}
-	clearStaleDaemonFiles(paths)
 	exePath, err := os.Executable()
 	if err != nil {
 		fatal(err)
 	}
-	pid, err := startDetachedDaemon(exePath, configPath, paths.logPath)
+	instanceID := newDaemonID("inst")
+	pid, exitCh, err := startDetachedDaemon(exePath, configPath, paths.logPath, instanceID)
 	if err != nil {
 		fatal(err)
+	}
+	record, err := waitForDaemonReady(paths, instanceID, daemonStartReadyTimeout, exitCh)
+	if err != nil {
+		fatal(err)
+	}
+	if record.PID > 0 {
+		pid = record.PID
 	}
 	fmt.Printf("Started daemon (pid=%d, log=%s)\n", pid, paths.logPath)
 }
@@ -125,22 +243,27 @@ func daemonStopCommand(args []string) {
 		Description: "Stop the detached daemon for this config if it is running.",
 		Notes: []string{
 			"Safe to run when the daemon is already stopped.",
-			"OAS clears stale daemon control files when it can prove the recorded PID is no longer the right daemon.",
+			"OAS stops the daemon through its on-disk control contract and only uses OS signals as a best-effort fallback.",
+			"Daemon lifecycle state must live on a local filesystem; network-mounted state directories are not supported.",
 		},
 		Examples: []string{
 			"oas daemon stop -config ./examples/config.example.json",
 		},
 	})
 	paths := daemonPathsFor(cfg)
-	pid, err := stopDaemon(paths, 15*time.Second)
+	result, err := stopDaemon(paths, 15*time.Second)
 	if err != nil {
 		fatal(err)
 	}
-	if pid == 0 {
+	if !result.WasLive {
 		fmt.Println("Daemon not running.")
 		return
 	}
-	fmt.Printf("Stopped daemon (pid=%d)\n", pid)
+	if result.PID > 0 {
+		fmt.Printf("Stopped daemon (pid=%d)\n", result.PID)
+		return
+	}
+	fmt.Println("Stopped daemon.")
 }
 
 func daemonStatusCommand(args []string) {
@@ -177,10 +300,12 @@ Show daemon/runtime status, resolved paths, and storage activity.
 		fatal(err)
 	}
 	paths := daemonPathsFor(cfg)
-	metadata, _ := readDaemonMetadata(paths.metaPath)
-	pid, running := readPID(paths.pidPath, metadata)
+	snapshot, err := inspectDaemonSnapshot(paths)
+	if err != nil {
+		fatal(err)
+	}
 	storageStatus, storageErr := daemonStorageStatusFor(cfg, paths.logPath)
-	view := buildDaemonStatusView(absConfigPath, cfg, metadata, paths, pid, running, storageStatus, storageErr)
+	view := buildDaemonStatusView(absConfigPath, cfg, paths, snapshot, storageStatus, storageErr)
 	if *asJSON {
 		if err := writeJSON(os.Stdout, view); err != nil {
 			fatal(err)
@@ -194,36 +319,45 @@ Show daemon/runtime status, resolved paths, and storage activity.
 
 func daemonRestartCommand(args []string) {
 	cfg, configPath := mustDaemonConfig(args, "daemon restart", daemonConfigHelp{
-		Description: "Stop the detached daemon for this config, then start a new detached process.",
+		Description: "Stop the detached daemon for this config, then wait for a new detached daemon to report ready.",
 		Notes: []string{
-			"Useful after changing config values that affect continuous mode or storage behavior.",
+			"Restart is strict stop-then-start. If the old daemon does not release its lock, restart fails instead of spawning a duplicate.",
+			"Daemon lifecycle state must live on a local filesystem; network-mounted state directories are not supported.",
 		},
 		Examples: []string{
 			"oas daemon restart -config ./examples/config.example.json",
 		},
 	})
 	paths := daemonPathsFor(cfg)
-	if oldPID, err := stopDaemon(paths, 15*time.Second); err != nil {
+	if result, err := stopDaemon(paths, 15*time.Second); err != nil {
 		fatal(err)
-	} else if oldPID > 0 {
-		fmt.Printf("Stopped daemon (pid=%d)\n", oldPID)
+	} else if result.WasLive && result.PID > 0 {
+		fmt.Printf("Stopped daemon (pid=%d)\n", result.PID)
 	}
-	clearStaleDaemonFiles(paths)
+	snapshot, err := inspectDaemonSnapshot(paths)
+	if err != nil {
+		fatal(err)
+	}
+	if snapshot.LockHeld {
+		fatal(errors.New("daemon lock is still held after stop; refusing to start a duplicate"))
+	}
 	exePath, err := os.Executable()
 	if err != nil {
 		fatal(err)
 	}
-	pid, err := startDetachedDaemon(exePath, configPath, paths.logPath)
+	instanceID := newDaemonID("inst")
+	pid, exitCh, err := startDetachedDaemon(exePath, configPath, paths.logPath, instanceID)
 	if err != nil {
 		fatal(err)
 	}
+	record, err := waitForDaemonReady(paths, instanceID, daemonStartReadyTimeout, exitCh)
+	if err != nil {
+		fatal(err)
+	}
+	if record.PID > 0 {
+		pid = record.PID
+	}
 	fmt.Printf("Started daemon (pid=%d, log=%s)\n", pid, paths.logPath)
-}
-
-type daemonConfigHelp struct {
-	Description string
-	Notes       []string
-	Examples    []string
 }
 
 func mustDaemonConfig(args []string, name string, help daemonConfigHelp) (config.Config, string) {
@@ -266,10 +400,14 @@ func daemonPathsFor(cfg config.Config) daemonPaths {
 	}
 	stateID := daemonStateKey(cfg.StatePath)
 	prefix := "oas-daemon-" + instance + "-" + stateID
+	statusPath := filepath.Join(baseDir, prefix+".json")
 	return daemonPaths{
-		pidPath:  filepath.Join(baseDir, prefix+".pid"),
-		logPath:  filepath.Join(baseDir, prefix+".log"),
-		metaPath: filepath.Join(baseDir, prefix+".json"),
+		pidPath:        filepath.Join(baseDir, prefix+".pid"),
+		logPath:        filepath.Join(baseDir, prefix+".log"),
+		statusPath:     statusPath,
+		metaPath:       statusPath,
+		lockPath:       filepath.Join(baseDir, prefix+".lock"),
+		controlDirPath: filepath.Join(baseDir, prefix+".control.d"),
 	}
 }
 
@@ -306,213 +444,351 @@ func runDaemonForeground(ctx context.Context, cfg config.Config, configPath stri
 	if err := os.MkdirAll(filepath.Dir(paths.pidPath), 0o755); err != nil {
 		return err
 	}
-	if existingPID := readExistingPID(paths); existingPID > 0 {
-		return fmt.Errorf("daemon already running (pid=%d)", existingPID)
+	lock, err := acquireDaemonLock(paths.lockPath)
+	if err != nil {
+		if errors.Is(err, errDaemonLockHeld) {
+			return errors.New("daemon already running for this config")
+		}
+		return err
 	}
-	clearStaleDaemonFiles(paths)
+	defer lock.Release()
+
+	if err := cleanupDaemonTransientFiles(paths); err != nil {
+		return err
+	}
+
+	instanceID := strings.TrimSpace(os.Getenv(daemonInstanceIDEnv))
+	if instanceID == "" {
+		instanceID = newDaemonID("inst")
+	}
 	pid := os.Getpid()
-	metadata := daemonMetadata{
+	startedAt := time.Now().UTC()
+	record := daemonStatusRecord{
+		SchemaVersion:        daemonStatusSchemaVersion,
+		InstanceID:           instanceID,
 		PID:                  pid,
 		ConfigPath:           configPath,
 		LogPath:              paths.logPath,
-		StartedAt:            time.Now().UTC().Format(time.RFC3339),
+		StartedAt:            startedAt.Format(time.RFC3339Nano),
+		HeartbeatAt:          startedAt.Format(time.RFC3339Nano),
+		LastTransitionAt:     startedAt.Format(time.RFC3339Nano),
+		State:                daemonStateStarting,
 		PollInterval:         cfg.PollInterval,
 		ErrorBackoff:         cfg.ErrorBackoff,
 		MaxConsecutiveErrors: cfg.MaxConsecutiveErrors,
 	}
-	if err := os.WriteFile(paths.pidPath, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+	manager := &daemonStatusManager{paths: paths, record: record}
+	if err := writePIDFile(paths.pidPath, pid); err != nil {
 		return err
 	}
-	if err := writeDaemonMetadata(paths.metaPath, metadata); err != nil {
+	if err := manager.persist(); err != nil {
 		_ = os.Remove(paths.pidPath)
 		return err
 	}
-	defer clearDaemonFiles(paths)
 
 	runtime, err := supervisor.New(cfg)
 	if err != nil {
+		_ = manager.markFailed(err)
+		_ = os.Remove(paths.pidPath)
 		return err
 	}
 	defer runtime.Close(ctx)
 
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	monitorDone := make(chan struct{})
+	go daemonLifecycleLoop(runCtx, manager, paths, instanceID, cancel, monitorDone)
+
+	if err := manager.markRunning(); err != nil {
+		cancel()
+		<-monitorDone
+		_ = manager.markFailed(err)
+		_ = os.Remove(paths.pidPath)
+		return err
+	}
+
 	fmt.Fprintf(os.Stderr, "[%s] daemon running (pid=%d, config=%s)\n", time.Now().UTC().Format(time.RFC3339), pid, configPath)
-	if err := runtime.RunContinuously(ctx); err != nil && !errors.Is(err, context.Canceled) {
+
+	runErr := runtime.RunContinuously(runCtx)
+	cancel()
+	<-monitorDone
+	_ = os.Remove(paths.pidPath)
+
+	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		_ = manager.markFailed(runErr)
+		return runErr
+	}
+	if err := manager.markStopped(); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "[%s] daemon stopped\n", time.Now().UTC().Format(time.RFC3339))
 	return nil
 }
 
-func startDetachedDaemon(exePath, configPath, logPath string) (int, error) {
+func daemonLifecycleLoop(ctx context.Context, manager *daemonStatusManager, paths daemonPaths, instanceID string, cancel context.CancelFunc, done chan<- struct{}) {
+	defer close(done)
+	heartbeatTicker := time.NewTicker(daemonHeartbeatInterval)
+	controlTicker := time.NewTicker(daemonControlPollInterval)
+	defer heartbeatTicker.Stop()
+	defer controlTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeatTicker.C:
+			if err := manager.heartbeat(); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] daemon heartbeat update failed: %v\n", time.Now().UTC().Format(time.RFC3339), err)
+			}
+		case <-controlTicker.C:
+			stopRequested, err := processDaemonControlRequests(paths, manager, instanceID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] daemon control processing failed: %v\n", time.Now().UTC().Format(time.RFC3339), err)
+				continue
+			}
+			if stopRequested {
+				cancel()
+			}
+		}
+	}
+}
+
+func startDetachedDaemon(exePath, configPath, logPath, instanceID string) (int, <-chan error, error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer logFile.Close()
 
 	cmd := exec.Command(exePath, "daemon", "run", "-config", configPath)
+	cmd.Env = append(os.Environ(), daemonInstanceIDEnv+"="+instanceID)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	pid := cmd.Process.Pid
-	_ = cmd.Process.Release()
-	return pid, nil
+	exitCh := make(chan error, 1)
+	go func() {
+		exitCh <- cmd.Wait()
+		close(exitCh)
+	}()
+	return cmd.Process.Pid, exitCh, nil
 }
 
-func stopDaemon(paths daemonPaths, timeout time.Duration) (int, error) {
-	metadata, _ := readDaemonMetadata(paths.metaPath)
-	pid, running := readPID(paths.pidPath, metadata)
-	if !running {
-		clearStaleDaemonFiles(paths)
-		return 0, nil
+func waitForDaemonReady(paths daemonPaths, instanceID string, timeout time.Duration, exitCh <-chan error) (daemonStatusRecord, error) {
+	deadline := time.Now().Add(timeout)
+	var lastMatch daemonStatusRecord
+	for {
+		snapshot, err := inspectDaemonSnapshot(paths)
+		if err == nil && snapshot.HasRecord && snapshot.RecordErr == nil && snapshot.Record.InstanceID == instanceID {
+			lastMatch = snapshot.Record
+			switch snapshot.Record.State {
+			case daemonStateRunning:
+				if snapshot.Live && snapshot.Ready {
+					return snapshot.Record, nil
+				}
+			case daemonStateFailed:
+				return snapshot.Record, errors.New(firstNonEmpty(snapshot.Record.LastError, "detached daemon failed before readiness"))
+			case daemonStateStopped:
+				return snapshot.Record, errors.New("detached daemon stopped before readiness")
+			}
+		}
+
+		select {
+		case err, ok := <-exitCh:
+			if ok {
+				if err != nil {
+					return daemonStatusRecord{}, fmt.Errorf("detached daemon exited before readiness: %w", err)
+				}
+				return daemonStatusRecord{}, errors.New("detached daemon exited before readiness")
+			}
+		default:
+		}
+
+		if time.Now().After(deadline) {
+			if lastMatch.InstanceID != "" {
+				return daemonStatusRecord{}, fmt.Errorf("timed out waiting for daemon %s to report ready (last state=%s)", instanceID, lastMatch.State)
+			}
+			return daemonStatusRecord{}, fmt.Errorf("timed out waiting for daemon %s to report ready", instanceID)
+		}
+		time.Sleep(daemonLifecyclePollInterval)
 	}
-	proc, err := os.FindProcess(pid)
+}
+
+func stopDaemon(paths daemonPaths, timeout time.Duration) (daemonStopResult, error) {
+	snapshot, err := inspectDaemonSnapshot(paths)
 	if err != nil {
-		clearStaleDaemonFiles(paths)
-		return 0, nil
+		return daemonStopResult{}, err
 	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		return pid, err
+	result := daemonStopResult{
+		PID:        snapshot.PID,
+		InstanceID: snapshot.Record.InstanceID,
+		WasLive:    snapshot.Live || snapshot.LockHeld,
+	}
+	if !result.WasLive {
+		if err := cleanupDaemonTransientFiles(paths); err != nil {
+			return daemonStopResult{}, err
+		}
+		return result, nil
+	}
+	if snapshot.RecordErr != nil || !snapshot.HasRecord || strings.TrimSpace(snapshot.Record.InstanceID) == "" {
+		if result.PID > 0 && bestEffortStopProcess(result.PID, 2*time.Second) {
+			_ = cleanupDaemonTransientFiles(paths)
+			return result, nil
+		}
+		return daemonStopResult{}, errors.New("daemon appears live but no readable status record with instance_id is available; cannot issue a safe targeted stop request")
+	}
+
+	request := daemonControlRequest{
+		SchemaVersion:    daemonControlSchemaVersion,
+		RequestID:        newDaemonID("req"),
+		TargetInstanceID: snapshot.Record.InstanceID,
+		Action:           "stop",
+		RequestedAt:      time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := writeDaemonControlRequest(paths.controlDirPath, request); err != nil {
+		return daemonStopResult{}, err
 	}
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if !processExists(pid) {
-			clearDaemonFiles(paths)
-			return pid, nil
+		current, err := inspectDaemonSnapshot(paths)
+		if err == nil && !current.LockHeld {
+			if err := cleanupDaemonTransientFiles(paths); err != nil {
+				return daemonStopResult{}, err
+			}
+			return result, nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(daemonLifecyclePollInterval)
 	}
-	if err := proc.Signal(syscall.SIGKILL); err != nil {
-		return pid, err
+
+	if result.PID > 0 && bestEffortStopProcess(result.PID, 2*time.Second) {
+		if err := cleanupDaemonTransientFiles(paths); err != nil {
+			return daemonStopResult{}, err
+		}
+		return result, nil
 	}
-	time.Sleep(200 * time.Millisecond)
-	clearDaemonFiles(paths)
-	return pid, nil
+
+	return daemonStopResult{}, fmt.Errorf("timed out waiting for daemon %s to release ownership", snapshot.Record.InstanceID)
 }
 
-func readExistingPID(paths daemonPaths) int {
-	metadata, _ := readDaemonMetadata(paths.metaPath)
-	pid, running := readPID(paths.pidPath, metadata)
-	if running {
-		return pid
-	}
-	return 0
-}
-
-func readPID(pidPath string, metadata daemonMetadata) (int, bool) {
-	data, err := os.ReadFile(pidPath)
+func inspectDaemonSnapshot(paths daemonPaths) (daemonStatusSnapshot, error) {
+	lockHeld, err := daemonLockHeld(paths.lockPath)
 	if err != nil {
-		return 0, false
+		return daemonStatusSnapshot{}, err
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0, false
+	record, hasRecord, recordErr := readDaemonStatusRecord(paths.statusPath)
+	pid, _ := readPIDFile(paths.pidPath)
+	if pid == 0 && hasRecord {
+		pid = record.PID
 	}
-	return pid, daemonProcessMatches(pid, metadata)
-}
-
-func processExists(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
-
-func writeDaemonMetadata(path string, metadata daemonMetadata) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
-}
-
-func readDaemonMetadata(path string) (daemonMetadata, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return daemonMetadata{}, err
-	}
-	var metadata daemonMetadata
-	if err := json.Unmarshal(data, &metadata); err != nil {
-		return daemonMetadata{}, err
-	}
-	return metadata, nil
-}
-
-func clearDaemonFiles(paths daemonPaths) {
-	_ = os.Remove(paths.pidPath)
-	_ = os.Remove(paths.metaPath)
-}
-
-func clearStaleDaemonFiles(paths daemonPaths) {
-	metadata, _ := readDaemonMetadata(paths.metaPath)
-	if _, running := readPID(paths.pidPath, metadata); !running {
-		clearDaemonFiles(paths)
-	}
-}
-
-func daemonStorageStatusFor(cfg config.Config, logPath string) (daemonStorageStatus, error) {
-	guard := storageguard.New(cfg, nil, nil)
-	report, err := guard.Inspect()
-	if err != nil {
-		return daemonStorageStatus{}, err
-	}
-	status := daemonStorageStatus{
-		Configured:        report.MaxStorageBytes > 0 || report.MinFreeBytes > 0 || report.PruneTargetBytes > 0,
-		UsageBytes:        report.UsageBytes,
-		FreeBytes:         report.FreeBytes,
-		ManagedPathCount:  len(report.ManagedPaths),
-		MaxStorageBytes:   report.MaxStorageBytes,
-		PruneTargetBytes:  report.PruneTargetBytes,
-		DesiredUsageBytes: report.DesiredUsageBytes,
-		MinFreeBytes:      report.MinFreeBytes,
-		NeedsEnforcement:  report.NeedsEnforcement,
-		Reason:            report.Reason,
-	}
-	for _, managedPath := range report.ManagedPaths {
-		status.ManagedPaths = append(status.ManagedPaths, absolutePathOrValue(managedPath))
-	}
-	activity, err := readLastStorageActivity(logPath)
-	if err != nil {
-		return status, err
-	}
-	status.LastActivity = activity
-	return status, nil
-}
-
-func buildDaemonStatusView(configPath string, cfg config.Config, metadata daemonMetadata, paths daemonPaths, pid int, running bool, storageStatus daemonStorageStatus, storageErr error) daemonStatusView {
-	view := daemonStatusView{
-		State:     daemonProcessState(pid, running),
-		Running:   running,
-		StalePID:  pid > 0 && !running,
+	snapshot := daemonStatusSnapshot{
+		Record:    record,
+		HasRecord: hasRecord,
+		RecordErr: recordErr,
+		LockHeld:  lockHeld,
 		PID:       pid,
-		StartedAt: metadata.StartedAt,
+	}
+	deriveDaemonStatusSnapshot(&snapshot, time.Now().UTC())
+	return snapshot, nil
+}
+
+func deriveDaemonStatusSnapshot(snapshot *daemonStatusSnapshot, now time.Time) {
+	if snapshot.RecordErr != nil {
+		if snapshot.LockHeld {
+			snapshot.Live = true
+			snapshot.StatusReason = "daemon lock is held but the status record is unreadable"
+		}
+		return
+	}
+	if !snapshot.HasRecord {
+		if snapshot.LockHeld {
+			snapshot.Live = true
+			snapshot.StatusReason = "daemon lock is held but no status record is available"
+		}
+		return
+	}
+
+	if daemonStateKnown(snapshot.Record.State) {
+		snapshot.HeartbeatFresh = daemonTimestampFresh(snapshot.Record.HeartbeatAt, now)
+	}
+
+	if daemonStateIsActive(snapshot.Record.State) {
+		snapshot.Live = snapshot.LockHeld || snapshot.HeartbeatFresh
+		snapshot.Stale = !snapshot.HeartbeatFresh
+	}
+	if snapshot.Record.ReadyAt != "" && snapshot.Record.State == daemonStateRunning && snapshot.HeartbeatFresh {
+		snapshot.Ready = true
+	}
+
+	switch {
+	case !daemonStateKnown(snapshot.Record.State):
+		if snapshot.LockHeld {
+			snapshot.Live = true
+		}
+		snapshot.StatusReason = fmt.Sprintf("status record contains unknown state %q", snapshot.Record.State)
+	case snapshot.Record.HeartbeatAt == "" && daemonStateIsActive(snapshot.Record.State):
+		if snapshot.LockHeld {
+			snapshot.Live = true
+		}
+		snapshot.StatusReason = "status record is missing heartbeat_at"
+	case snapshot.Stale && snapshot.LockHeld:
+		snapshot.StatusReason = "heartbeat expired while daemon lock is still held"
+	case snapshot.Stale:
+		snapshot.StatusReason = "heartbeat expired and daemon lock is free"
+	case snapshot.LockHeld && !daemonStateIsActive(snapshot.Record.State):
+		snapshot.Live = true
+		snapshot.StatusReason = "daemon lock is held but the status record is not in an active lifecycle state"
+	}
+}
+
+func buildDaemonStatusView(configPath string, cfg config.Config, paths daemonPaths, snapshot daemonStatusSnapshot, storageStatus daemonStorageStatus, storageErr error) daemonStatusView {
+	record := snapshot.Record
+	state := daemonStateStopped
+	if snapshot.HasRecord && snapshot.RecordErr == nil && daemonStateKnown(record.State) {
+		state = record.State
+	} else if snapshot.LockHeld {
+		state = daemonStateStarting
+	}
+	view := daemonStatusView{
+		SchemaVersion:          firstNonZero(record.SchemaVersion, daemonStatusSchemaVersion),
+		InstanceID:             record.InstanceID,
+		State:                  state,
+		Running:                snapshot.Live,
+		Live:                   snapshot.Live,
+		Ready:                  snapshot.Ready,
+		Stale:                  snapshot.Stale,
+		HeartbeatFresh:         snapshot.HeartbeatFresh,
+		StatusReason:           snapshot.StatusReason,
+		StalePID:               snapshot.Stale && snapshot.PID > 0 && !snapshot.Live,
+		PID:                    snapshot.PID,
+		StartedAt:              record.StartedAt,
+		ReadyAt:                record.ReadyAt,
+		HeartbeatAt:            record.HeartbeatAt,
+		LastTransitionAt:       record.LastTransitionAt,
+		LastError:              record.LastError,
+		LastProcessedRequestID: record.LastProcessedRequestID,
+		LastControlAction:      record.LastControlAction,
 		Runtime: daemonRuntimeStatus{
-			ConfigPath:           firstNonEmpty(metadata.ConfigPath, configPath),
-			PollInterval:         firstNonEmpty(metadata.PollInterval, cfg.PollInterval),
-			ErrorBackoff:         firstNonEmpty(metadata.ErrorBackoff, cfg.ErrorBackoff),
-			MaxConsecutiveErrors: firstNonZero(metadata.MaxConsecutiveErrors, cfg.MaxConsecutiveErrors),
+			ConfigPath:           firstNonEmpty(record.ConfigPath, configPath),
+			PollInterval:         firstNonEmpty(record.PollInterval, cfg.PollInterval),
+			ErrorBackoff:         firstNonEmpty(record.ErrorBackoff, cfg.ErrorBackoff),
+			MaxConsecutiveErrors: firstNonZero(record.MaxConsecutiveErrors, cfg.MaxConsecutiveErrors),
 		},
 		Paths: daemonResolvedPaths{
-			StatePath:  absolutePathOrValue(cfg.StatePath),
-			LedgerPath: absolutePathOrValue(cfg.LedgerPath),
-			PIDPath:    absolutePathOrValue(paths.pidPath),
-			LogPath:    absolutePathOrValue(paths.logPath),
-			MetaPath:   absolutePathOrValue(paths.metaPath),
+			StatePath:      absolutePathOrValue(cfg.StatePath),
+			LedgerPath:     absolutePathOrValue(cfg.LedgerPath),
+			PIDPath:        absolutePathOrValue(paths.pidPath),
+			LogPath:        absolutePathOrValue(paths.logPath),
+			StatusPath:     absolutePathOrValue(paths.statusPath),
+			MetaPath:       absolutePathOrValue(paths.metaPath),
+			LockPath:       absolutePathOrValue(paths.lockPath),
+			ControlDirPath: absolutePathOrValue(paths.controlDirPath),
 		},
 	}
 	if storageErr != nil {
@@ -528,21 +804,38 @@ func writeDaemonStatusReport(writer io.Writer, view daemonStatusView) error {
 	var b strings.Builder
 	appendKeyValueSection(&b, "Daemon",
 		[2]string{"State", view.State},
+		[2]string{"Live", yesNo(view.Live)},
+		[2]string{"Ready", yesNo(view.Ready)},
+		[2]string{"Stale", yesNo(view.Stale)},
+		[2]string{"Heartbeat fresh", yesNo(view.HeartbeatFresh)},
 		[2]string{"PID", intString(view.PID)},
+		[2]string{"Instance ID", view.InstanceID},
 		[2]string{"Started", view.StartedAt},
+		[2]string{"Ready at", view.ReadyAt},
+		[2]string{"Heartbeat", view.HeartbeatAt},
+		[2]string{"Last transition", view.LastTransitionAt},
 		[2]string{"Config", view.Runtime.ConfigPath},
+		[2]string{"Status reason", view.StatusReason},
+		[2]string{"Last error", view.LastError},
 	)
 	appendKeyValueSection(&b, "Runtime",
 		[2]string{"Poll interval", view.Runtime.PollInterval},
 		[2]string{"Error backoff", view.Runtime.ErrorBackoff},
 		[2]string{"Max consecutive errors", intString(view.Runtime.MaxConsecutiveErrors)},
 	)
+	appendKeyValueSection(&b, "Control",
+		[2]string{"Last request ID", emptyStatusValue(view.LastProcessedRequestID)},
+		[2]string{"Last action", emptyStatusValue(view.LastControlAction)},
+	)
 	appendKeyValueSection(&b, "Paths",
 		[2]string{"State DB", view.Paths.StatePath},
 		[2]string{"Ledger DB", view.Paths.LedgerPath},
 		[2]string{"PID file", view.Paths.PIDPath},
 		[2]string{"Log file", view.Paths.LogPath},
+		[2]string{"Status file", view.Paths.StatusPath},
 		[2]string{"Metadata file", view.Paths.MetaPath},
+		[2]string{"Lock file", view.Paths.LockPath},
+		[2]string{"Control dir", view.Paths.ControlDirPath},
 	)
 	if view.StorageError != "" {
 		appendKeyValueSection(&b, "Storage",
@@ -574,17 +867,6 @@ func writeDaemonStatusReport(writer io.Writer, view daemonStatusView) error {
 	}
 	_, err := io.WriteString(writer, strings.TrimRight(b.String(), "\n")+"\n")
 	return err
-}
-
-func daemonProcessState(pid int, running bool) string {
-	switch {
-	case running:
-		return "running"
-	case pid > 0:
-		return "stale"
-	default:
-		return "stopped"
-	}
 }
 
 func needsEnforcementText(status *daemonStorageStatus) string {
@@ -633,6 +915,42 @@ func yesNo(value bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+func emptyStatusValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "none"
+	}
+	return value
+}
+
+func daemonStorageStatusFor(cfg config.Config, logPath string) (daemonStorageStatus, error) {
+	guard := storageguard.New(cfg, nil, nil)
+	report, err := guard.Inspect()
+	if err != nil {
+		return daemonStorageStatus{}, err
+	}
+	status := daemonStorageStatus{
+		Configured:        report.MaxStorageBytes > 0 || report.MinFreeBytes > 0 || report.PruneTargetBytes > 0,
+		UsageBytes:        report.UsageBytes,
+		FreeBytes:         report.FreeBytes,
+		ManagedPathCount:  len(report.ManagedPaths),
+		MaxStorageBytes:   report.MaxStorageBytes,
+		PruneTargetBytes:  report.PruneTargetBytes,
+		DesiredUsageBytes: report.DesiredUsageBytes,
+		MinFreeBytes:      report.MinFreeBytes,
+		NeedsEnforcement:  report.NeedsEnforcement,
+		Reason:            report.Reason,
+	}
+	for _, managedPath := range report.ManagedPaths {
+		status.ManagedPaths = append(status.ManagedPaths, absolutePathOrValue(managedPath))
+	}
+	activity, err := readLastStorageActivity(logPath)
+	if err != nil {
+		return status, err
+	}
+	status.LastActivity = activity
+	return status, nil
 }
 
 func readLastStorageActivity(logPath string) (*daemonStorageActivity, error) {
@@ -733,32 +1051,383 @@ func parseInt64Default(value string) int64 {
 	return parsed
 }
 
-func daemonProcessMatches(pid int, metadata daemonMetadata) bool {
-	if !processExists(pid) {
+func readDaemonStatusRecord(path string) (daemonStatusRecord, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return daemonStatusRecord{}, false, nil
+		}
+		return daemonStatusRecord{}, false, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return daemonStatusRecord{}, false, errors.New("status record is empty")
+	}
+	var record daemonStatusRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return daemonStatusRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func daemonStateKnown(state string) bool {
+	switch strings.TrimSpace(state) {
+	case daemonStateStarting, daemonStateRunning, daemonStateStopping, daemonStateStopped, daemonStateFailed:
+		return true
+	default:
 		return false
 	}
-	if metadata.PID != pid || strings.TrimSpace(metadata.ConfigPath) == "" {
+}
+
+func daemonStateIsActive(state string) bool {
+	switch strings.TrimSpace(state) {
+	case daemonStateStarting, daemonStateRunning, daemonStateStopping:
+		return true
+	default:
 		return false
 	}
-	cmdline, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+}
+
+func daemonTimestampFresh(raw string, now time.Time) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
 		return false
 	}
-	parts := strings.Split(string(cmdline), "\x00")
-	wantConfig := strings.TrimSpace(metadata.ConfigPath)
-	hasDaemon := false
-	hasRun := false
-	hasConfig := false
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		switch part {
-		case "daemon":
-			hasDaemon = true
-		case "run":
-			hasRun = true
-		case wantConfig:
-			hasConfig = true
+	return now.Sub(timestamp) <= daemonStatusStaleThreshold
+}
+
+func acquireDaemonLock(path string) (*daemonLock, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, errDaemonLockHeld
+		}
+		return nil, wrapDaemonLockError(err)
+	}
+	return &daemonLock{file: file}, nil
+}
+
+func daemonLockHeld(path string) (bool, error) {
+	lock, err := acquireDaemonLock(path)
+	if err != nil {
+		if errors.Is(err, errDaemonLockHeld) {
+			return true, nil
+		}
+		return false, err
+	}
+	lock.Release()
+	return false, nil
+}
+
+func (l *daemonLock) Release() {
+	if l == nil || l.file == nil {
+		return
+	}
+	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	_ = l.file.Close()
+	l.file = nil
+}
+
+func wrapDaemonLockError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS) {
+		return fmt.Errorf("%w: daemon lifecycle state must live on a local filesystem; network-mounted state directories are unsupported", err)
+	}
+	return err
+}
+
+func cleanupDaemonTransientFiles(paths daemonPaths) error {
+	if err := os.MkdirAll(paths.controlDirPath, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(paths.controlDirPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(paths.controlDirPath, entry.Name())); err != nil {
+			return err
 		}
 	}
-	return hasDaemon && hasRun && hasConfig
+	if err := os.Remove(paths.pidPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func writePIDFile(path string, pid int) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o644)
+}
+
+func readPIDFile(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0, err
+	}
+	return pid, nil
+}
+
+func writeDaemonControlRequest(controlDir string, request daemonControlRequest) error {
+	filename := request.RequestID + ".json"
+	return writeAtomicJSON(filepath.Join(controlDir, filename), request)
+}
+
+func processDaemonControlRequests(paths daemonPaths, manager *daemonStatusManager, instanceID string) (bool, error) {
+	if err := os.MkdirAll(paths.controlDirPath, 0o755); err != nil {
+		return false, err
+	}
+	entries, err := os.ReadDir(paths.controlDirPath)
+	if err != nil {
+		return false, err
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	current := manager.snapshot()
+	for _, entry := range entries {
+		path := filepath.Join(paths.controlDirPath, entry.Name())
+		if entry.IsDir() {
+			if err := os.RemoveAll(path); err != nil {
+				return false, err
+			}
+			continue
+		}
+		request, err := readDaemonControlRequest(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] ignoring malformed daemon control request %s: %v\n", time.Now().UTC().Format(time.RFC3339), path, err)
+			_ = os.Remove(path)
+			continue
+		}
+		if strings.TrimSpace(request.TargetInstanceID) != instanceID {
+			_ = os.Remove(path)
+			continue
+		}
+		if request.RequestID == "" || request.RequestID == current.LastProcessedRequestID {
+			_ = os.Remove(path)
+			continue
+		}
+		if request.Action != "stop" {
+			if err := manager.ackRequest(request, "unsupported:"+request.Action, ""); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] daemon control acknowledgement failed: %v\n", time.Now().UTC().Format(time.RFC3339), err)
+			}
+			_ = os.Remove(path)
+			current = manager.snapshot()
+			continue
+		}
+		if err := manager.markStopping(request); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] daemon stopping transition failed: %v\n", time.Now().UTC().Format(time.RFC3339), err)
+		}
+		_ = os.Remove(path)
+		return true, nil
+	}
+	return false, nil
+}
+
+func readDaemonControlRequest(path string) (daemonControlRequest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return daemonControlRequest{}, err
+	}
+	var request daemonControlRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		return daemonControlRequest{}, err
+	}
+	return request, nil
+}
+
+func writeAtomicJSON(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return writeAtomicFile(path, data)
+}
+
+func writeAtomicFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tempPath := path + ".tmp-" + newDaemonID("write")
+	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func newDaemonID(prefix string) string {
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
+	}
+	return fmt.Sprintf("%s-%d-%s", prefix, time.Now().UTC().UnixNano(), hex.EncodeToString(suffix[:]))
+}
+
+func (m *daemonStatusManager) snapshot() daemonStatusRecord {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.record
+}
+
+func (m *daemonStatusManager) persist() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistLocked()
+}
+
+func (m *daemonStatusManager) persistLocked() error {
+	return writeAtomicJSON(m.paths.statusPath, m.record)
+}
+
+func (m *daemonStatusManager) update(update func(record *daemonStatusRecord, now time.Time)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	update(&m.record, now)
+	return m.persistLocked()
+}
+
+func (m *daemonStatusManager) heartbeat() error {
+	return m.update(func(record *daemonStatusRecord, now time.Time) {
+		record.HeartbeatAt = now.Format(time.RFC3339Nano)
+	})
+}
+
+func (m *daemonStatusManager) markRunning() error {
+	return m.update(func(record *daemonStatusRecord, now time.Time) {
+		record.State = daemonStateRunning
+		record.HeartbeatAt = now.Format(time.RFC3339Nano)
+		record.LastTransitionAt = now.Format(time.RFC3339Nano)
+		record.LastError = ""
+		if record.ReadyAt == "" {
+			record.ReadyAt = now.Format(time.RFC3339Nano)
+		}
+	})
+}
+
+func (m *daemonStatusManager) markStopping(request daemonControlRequest) error {
+	return m.update(func(record *daemonStatusRecord, now time.Time) {
+		record.State = daemonStateStopping
+		record.HeartbeatAt = now.Format(time.RFC3339Nano)
+		record.LastTransitionAt = now.Format(time.RFC3339Nano)
+		record.LastProcessedRequestID = request.RequestID
+		record.LastControlAction = request.Action
+		record.LastError = ""
+	})
+}
+
+func (m *daemonStatusManager) ackRequest(request daemonControlRequest, action, lastError string) error {
+	return m.update(func(record *daemonStatusRecord, now time.Time) {
+		record.HeartbeatAt = now.Format(time.RFC3339Nano)
+		record.LastProcessedRequestID = request.RequestID
+		record.LastControlAction = action
+		record.LastError = lastError
+	})
+}
+
+func (m *daemonStatusManager) markStopped() error {
+	return m.update(func(record *daemonStatusRecord, now time.Time) {
+		record.State = daemonStateStopped
+		record.HeartbeatAt = now.Format(time.RFC3339Nano)
+		record.LastTransitionAt = now.Format(time.RFC3339Nano)
+		record.LastError = ""
+	})
+}
+
+func (m *daemonStatusManager) markFailed(runErr error) error {
+	trimmed := strings.TrimSpace(runErr.Error())
+	return m.update(func(record *daemonStatusRecord, now time.Time) {
+		record.State = daemonStateFailed
+		record.HeartbeatAt = now.Format(time.RFC3339Nano)
+		record.LastTransitionAt = now.Format(time.RFC3339Nano)
+		record.LastError = trimmed
+	})
+}
+
+func bestEffortStopProcess(pid int, timeout time.Duration) bool {
+	if pid <= 0 || daemonDisableProcessTest {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !processExists(pid) {
+			return true
+		}
+		time.Sleep(daemonLifecyclePollInterval)
+	}
+	if err := proc.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return false
+	}
+	time.Sleep(200 * time.Millisecond)
+	return !processExists(pid)
+}
+
+func processExists(pid int) bool {
+	if pid <= 0 || daemonDisableProcessTest {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err == nil && processSignalIndicatesExists(proc.Signal(syscall.Signal(0))) {
+		return true
+	}
+	output, psErr := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "pid=").Output()
+	if psErr != nil {
+		return false
+	}
+	return strings.TrimSpace(string(output)) != ""
+}
+
+func processSignalIndicatesExists(err error) bool {
+	return err == nil || errors.Is(err, syscall.EPERM) || errors.Is(err, os.ErrPermission)
 }
