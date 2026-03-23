@@ -31,6 +31,17 @@ func NewService(sequences SequenceStore) *Service {
 	}
 }
 
+func (s *Service) SeedCallName(callID, toolName string) {
+	callID = strings.TrimSpace(callID)
+	toolName = strings.TrimSpace(toolName)
+	if callID == "" || toolName == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callNames[callID] = toolName
+}
+
 func (s *Service) Normalize(record ledger.Record) (schema.CanonicalEvent, error) {
 	envelope := schema.EnsureEnvelopeID(record.Envelope)
 	payload, parseErr := decodePayload(envelope.RawPayload)

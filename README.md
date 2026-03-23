@@ -27,7 +27,7 @@ This repository is intentionally spec-first. The initial implementation includes
   - a SQLite-backed raw ledger and state store
   - a canonical normalizer
   - neutral sinks for `jsonl`, `sqlite`, `stdout`, and `webhook`
-  - CLI commands for `run`, `daemon`, `replay`, `export`, `doctor`, and `validate`
+  - CLI commands for `run`, `daemon`, `replay`, `export`, `analytics`, `doctor`, and `validate`
 
 ## Non-Goals
 
@@ -171,6 +171,23 @@ What to look for:
 
 ### 6. Move from one-shot runs to continuous collection
 
+### 6. Build local analytics
+
+```bash
+oas analytics build -config ./oas.json
+oas analytics query -config ./oas.json
+oas analytics query -config ./oas.json -preset failures
+oas analytics export -config ./oas.json -output ./exports/analytics
+oas analytics status -config ./oas.json
+```
+
+`oas analytics` builds a local DuckDB cache on demand from retained ledger
+history. It is not part of the ingest hot path. The stable portable contract is
+the exported Parquet snapshot plus `manifest.json`; the local DuckDB layout is
+an implementation detail except for the public query views.
+
+### 7. Move from one-shot runs to continuous collection
+
 ```bash
 oas daemon start -config ./oas.json
 oas daemon status -config ./oas.json
@@ -200,7 +217,7 @@ Store daemon state on a local filesystem. Network-mounted state directories are
 not supported for daemon lifecycle control because lock semantics are not
 portable there.
 
-### 7. Run operational checks
+### 8. Run operational checks
 
 ```bash
 oas doctor -config ./oas.json
@@ -210,7 +227,7 @@ oas doctor -config ./oas.json -json
 `oas doctor` prints a readable table by default and supports `-json` for
 automation.
 
-### 8. Replay when you want to re-deliver ledger history
+### 9. Replay when you want to re-deliver ledger history
 
 ```bash
 oas replay -config ./oas.json

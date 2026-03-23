@@ -1,7 +1,9 @@
 package ledger
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -16,8 +18,21 @@ type Record struct {
 	Offset   int64
 	Envelope schema.RawEnvelope
 }
+
+type Metadata struct {
+	InstanceID string
+	CreatedAt  time.Time
+}
+
+type Bounds struct {
+	MinOffset  int64
+	MaxOffset  int64
+	HasRecords bool
+}
+
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	metadata Metadata
 }
 
 func Open(path string) (*Store, error) {
@@ -40,6 +55,11 @@ func Open(path string) (*Store, error) {
 			content_hash TEXT NOT NULL,
 			observed_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS ledger_meta (
+			singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+			ledger_instance_id TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -47,7 +67,12 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{db: db}, nil
+	metadata, err := ensureMetadata(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &Store{db: db, metadata: metadata}, nil
 }
 
 func (s *Store) Close() error {
@@ -108,6 +133,29 @@ func (s *Store) ListAfter(offset int64, limit int) ([]Record, error) {
 	return records, rows.Err()
 }
 
+func (s *Store) Metadata() Metadata {
+	return s.metadata
+}
+
+func (s *Store) Bounds() (Bounds, error) {
+	row := s.db.QueryRow(`SELECT MIN(offset), MAX(offset) FROM raw_ledger`)
+	var (
+		minOffset sql.NullInt64
+		maxOffset sql.NullInt64
+	)
+	if err := row.Scan(&minOffset, &maxOffset); err != nil {
+		return Bounds{}, err
+	}
+	if !minOffset.Valid || !maxOffset.Valid {
+		return Bounds{}, nil
+	}
+	return Bounds{
+		MinOffset:  minOffset.Int64,
+		MaxOffset:  maxOffset.Int64,
+		HasRecords: true,
+	}, nil
+}
+
 func (s *Store) DeleteThrough(offset int64) (int64, error) {
 	if offset <= 0 {
 		return 0, nil
@@ -129,4 +177,45 @@ func (s *Store) Compact() error {
 		}
 	}
 	return nil
+}
+
+func ensureMetadata(db *sql.DB) (Metadata, error) {
+	row := db.QueryRow(`SELECT ledger_instance_id, created_at FROM ledger_meta WHERE singleton = 1`)
+	var (
+		metadata Metadata
+		created  string
+	)
+	switch err := row.Scan(&metadata.InstanceID, &created); err {
+	case nil:
+		parsed, err := time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return Metadata{}, err
+		}
+		metadata.CreatedAt = parsed
+		return metadata, nil
+	case sql.ErrNoRows:
+	default:
+		return Metadata{}, err
+	}
+
+	metadata = Metadata{
+		InstanceID: "ledger_" + randomHex(8),
+		CreatedAt:  time.Now().UTC(),
+	}
+	if _, err := db.Exec(
+		`INSERT INTO ledger_meta (singleton, ledger_instance_id, created_at) VALUES (1, ?, ?)`,
+		metadata.InstanceID,
+		metadata.CreatedAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return Metadata{}, err
+	}
+	return metadata, nil
+}
+
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return time.Now().UTC().Format("20060102150405.000000000")
+	}
+	return hex.EncodeToString(buf)
 }

@@ -44,6 +44,8 @@ func main() {
 		replayCommand(ctx, os.Args[2:])
 	case "export":
 		exportCommand(ctx, os.Args[2:])
+	case "analytics":
+		analyticsCommand(ctx, os.Args[2:])
 	case "summary":
 		summaryCommand(ctx, os.Args[2:])
 	case "inspect":
@@ -454,6 +456,7 @@ Core commands:
   config    Initialize, inspect, or validate config
   replay    Replay ledger entries to sinks
   export    Export canonical events as JSONL
+  analytics Build, query, export, and inspect DuckDB analytics
   summary   Summarize canonical events by session
   inspect   Inspect one session in reviewer-friendly detail
   doctor    Run operational checks
@@ -463,6 +466,7 @@ Use:
   oas <command> --help
   oas daemon --help
   oas config --help
+  oas analytics --help
 
 Common starts:
   oas version
@@ -470,6 +474,7 @@ Common starts:
   oas run -config ./oas.json
   oas daemon start -config ./oas.json
   oas export -config ./oas.json -output ./exports/events.jsonl
+  oas analytics build -config ./oas.json
   oas summary -input ./exports/events.jsonl
 `)
 }

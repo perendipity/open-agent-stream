@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/open-agent-stream/open-agent-stream/internal/analytics"
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
 	"github.com/open-agent-stream/open-agent-stream/internal/health"
 	"github.com/open-agent-stream/open-agent-stream/internal/ledger"
@@ -396,6 +397,9 @@ func (r *Runtime) ingestSources(ctx context.Context) (int, error) {
 				continue
 			}
 			for _, envelope := range envelopes {
+				if envelope.MachineID == "" {
+					envelope.MachineID = r.cfg.MachineID
+				}
 				if _, err := r.ledger.Append(envelope); err != nil {
 					return total, err
 				}
@@ -598,4 +602,8 @@ func normalizeSinkIDs(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func (r *Runtime) Analytics() *analytics.Service {
+	return analytics.New(r.cfg, r.ledger)
 }
