@@ -42,6 +42,10 @@ func main() {
 		replayCommand(ctx, os.Args[2:])
 	case "export":
 		exportCommand(ctx, os.Args[2:])
+	case "summary":
+		summaryCommand(ctx, os.Args[2:])
+	case "inspect":
+		inspectCommand(ctx, os.Args[2:])
 	case "doctor":
 		doctorCommand(ctx, os.Args[2:])
 	case "validate":
@@ -383,6 +387,8 @@ Core commands:
   config    Initialize, print, or validate config
   replay    Replay ledger entries to sinks
   export    Export canonical events as JSONL
+  summary   Summarize canonical events by session
+  inspect   Inspect one session in reviewer-friendly detail
   doctor    Run operational checks
   validate  Validate config and fixtures (alias of "config validate")
 
