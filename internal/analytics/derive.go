@@ -308,7 +308,7 @@ func (r sessionRollupRow) args() []any {
 
 func buildEnvelopeFact(record ledger.Record, event schema.CanonicalEvent, machineID, ledgerInstanceID string) envelopeFactRow {
 	return envelopeFactRow{
-		GlobalEnvelopeKey: schema.StableID("gaenv", machineID, record.Envelope.EnvelopeID),
+		GlobalEnvelopeKey: globalEnvelopeKey(machineID, record.Envelope.EnvelopeID),
 		MachineID:         machineID,
 		LedgerInstanceID:  ledgerInstanceID,
 		LedgerOffset:      record.Offset,
@@ -320,7 +320,7 @@ func buildEnvelopeFact(record ledger.Record, event schema.CanonicalEvent, machin
 		ProjectLocator:    firstNonEmpty(event.Context.ProjectLocator, record.Envelope.ProjectLocator),
 		ProjectKey:        event.Context.ProjectKey,
 		SourceSessionKey:  event.Context.SourceSessionKey,
-		GlobalSessionKey:  schema.StableID("gasess", machineID, record.Envelope.SourceInstanceID, event.Context.SourceSessionKey),
+		GlobalSessionKey:  globalSessionKey(machineID, record.Envelope.SourceInstanceID, event.Context.SourceSessionKey),
 		CursorKind:        record.Envelope.Cursor.Kind,
 		CursorValue:       record.Envelope.Cursor.Value,
 		ObservedAt:        record.Envelope.ObservedAt.UTC(),
@@ -337,8 +337,8 @@ func buildEventFact(record ledger.Record, event schema.CanonicalEvent, machineID
 	exitCode, hasExitCode := payloadInt(event.Payload, "exit_code")
 	durationMillis, hasDurationMillis := payloadInt(event.Payload, "duration_ms")
 	row := eventFactRow{
-		GlobalEventKey:    schema.StableID("gaevt", machineID, event.EventID),
-		GlobalEnvelopeKey: schema.StableID("gaenv", machineID, record.Envelope.EnvelopeID),
+		GlobalEventKey:    globalEventKey(machineID, event.EventID),
+		GlobalEnvelopeKey: globalEnvelopeKey(machineID, record.Envelope.EnvelopeID),
 		MachineID:         machineID,
 		LedgerInstanceID:  ledgerInstanceID,
 		LedgerOffset:      record.Offset,
@@ -348,7 +348,7 @@ func buildEventFact(record ledger.Record, event schema.CanonicalEvent, machineID
 		SourceInstanceID:  event.SourceInstanceID,
 		SessionKey:        event.SessionKey,
 		SourceSessionKey:  event.Context.SourceSessionKey,
-		GlobalSessionKey:  schema.StableID("gasess", machineID, event.SourceInstanceID, event.Context.SourceSessionKey),
+		GlobalSessionKey:  globalSessionKey(machineID, event.SourceInstanceID, event.Context.SourceSessionKey),
 		ProjectKey:        event.Context.ProjectKey,
 		ProjectLocator:    event.Context.ProjectLocator,
 		Sequence:          event.Sequence,
@@ -788,6 +788,18 @@ func payloadCallID(payload map[string]any) string {
 		return value
 	}
 	return payloadString(mapValue(payload, "payload"), "call_id")
+}
+
+func globalEnvelopeKey(machineID, envelopeID string) string {
+	return schema.StableID("gaenv", machineID, envelopeID)
+}
+
+func globalEventKey(machineID, eventID string) string {
+	return schema.StableID("gaevt", machineID, eventID)
+}
+
+func globalSessionKey(machineID, sourceInstanceID, sourceSessionKey string) string {
+	return schema.StableID("gasess", machineID, sourceInstanceID, sourceSessionKey)
 }
 
 func payloadString(payload map[string]any, keys ...string) string {

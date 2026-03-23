@@ -61,10 +61,12 @@ type BuildOptions struct {
 }
 
 type QueryOptions struct {
-	Path    string
-	SQL     string
-	Preset  string
-	Rebuild bool
+	Path      string
+	SQL       string
+	Preset    string
+	Limit     int
+	Sensitive bool
+	Rebuild   bool
 }
 
 type ExportOptions struct {

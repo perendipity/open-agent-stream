@@ -287,17 +287,42 @@ func (s *Service) Query(ctx context.Context, opts QueryOptions) ([]string, [][]a
 	if err != nil {
 		return nil, nil, Status{}, err
 	}
-	query, err := querySQLForPreset(opts.Preset, opts.SQL)
-	if err != nil {
-		return nil, nil, Status{}, err
-	}
 	db, err := openDuckDB(status.Path)
 	if err != nil {
 		return nil, nil, Status{}, err
 	}
 	defer db.Close()
-	columns, rows, err := runQuery(ctx, db, query)
-	return columns, rows, status, err
+	if strings.TrimSpace(opts.SQL) != "" {
+		if opts.Sensitive {
+			return nil, nil, Status{}, errors.New("analytics query -sensitive cannot be combined with -sql")
+		}
+		columns, rows, err := runQuery(ctx, db, strings.TrimSpace(opts.SQL))
+		return columns, rows, status, err
+	}
+
+	spec, err := resolvePreset(opts.Preset)
+	if err != nil {
+		return nil, nil, Status{}, err
+	}
+	limit, err := effectivePresetLimit(opts.Limit, spec.DefaultLimit)
+	if err != nil {
+		return nil, nil, Status{}, err
+	}
+	result, err := spec.Run(ctx, db, status, limit, time.Now().UTC())
+	if err != nil {
+		return nil, nil, Status{}, err
+	}
+	if opts.Sensitive {
+		if !spec.SupportsSensitive {
+			return nil, nil, Status{}, fmt.Errorf("analytics preset %q does not support -sensitive", spec.Name)
+		}
+		result, err = s.augmentSensitivePreset(ctx, spec.Name, result)
+		if err != nil {
+			return nil, nil, Status{}, err
+		}
+	}
+	columns, rows := result.queryRows()
+	return columns, rows, status, nil
 }
 
 func (s *Service) Export(ctx context.Context, opts ExportOptions) (Manifest, Status, error) {

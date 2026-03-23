@@ -89,8 +89,10 @@ func analyticsQueryCommand(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("analytics query", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
 	dbPath := fs.String("db", "", "analytics cache path (default near the resolved state path)")
-	preset := fs.String("preset", "", "built-in query preset: overview, sessions, failures, activity (defaults to overview when unset)")
+	preset := fs.String("preset", "", "built-in query preset: overview, attention, recent_sessions, projects, sources, command_health, timeline, coverage")
 	sqlText := fs.String("sql", "", "run custom SQL against the stable public analytics views")
+	limit := fs.Int("limit", 20, "maximum rows for row-oriented presets (0 uses the preset default)")
+	sensitive := fs.Bool("sensitive", false, "augment supported presets with transient redacted message previews")
 	rebuild := fs.Bool("rebuild", false, "rebuild the cache first if it is not append-compatible")
 	jsonOutput := fs.Bool("json", false, "print structured JSON instead of a table")
 	fs.Usage = func() {
@@ -98,21 +100,25 @@ func analyticsQueryCommand(ctx context.Context, args []string) {
 
 Query the local DuckDB analytics cache. Custom SQL should target the stable
 public views: envelope_facts, event_facts, session_rollups, and command_rollups.
+Use -sensitive only with built-in presets that support transient local previews.
 
 `)
 		printFlagSection(os.Stderr, fs, "Common flags",
 			usageFlag{Name: "config", Placeholder: "<path>"},
-			usageFlag{Name: "preset", Placeholder: "<overview|sessions|failures|activity>"},
+			usageFlag{Name: "preset", Placeholder: "<overview|attention|recent_sessions|projects|sources|command_health|timeline|coverage>"},
 		)
 		printFlagSection(os.Stderr, fs, "Advanced flags",
 			usageFlag{Name: "sql", Placeholder: "<query>"},
+			usageFlag{Name: "limit", Placeholder: "<n>"},
+			usageFlag{Name: "sensitive"},
 			usageFlag{Name: "db", Placeholder: "<path>"},
 			usageFlag{Name: "rebuild"},
 			usageFlag{Name: "json"},
 		)
 		printExamples(os.Stderr,
 			"oas analytics query -config ./oas.json",
-			"oas analytics query -config ./oas.json -preset failures",
+			"oas analytics query -config ./oas.json -preset attention",
+			"oas analytics query -config ./oas.json -preset recent_sessions -sensitive",
 			"oas analytics query -config ./oas.json -sql 'select kind, count(*) as n from event_facts group by 1 order by 2 desc'",
 		)
 	}
@@ -122,10 +128,12 @@ public views: envelope_facts, event_facts, session_rollups, and command_rollups.
 	defer closeRuntime(ctx, runtime)
 
 	columns, rows, status, err := runtime.Analytics().Query(ctx, analytics.QueryOptions{
-		Path:    *dbPath,
-		Preset:  *preset,
-		SQL:     *sqlText,
-		Rebuild: *rebuild,
+		Path:      *dbPath,
+		Preset:    *preset,
+		SQL:       *sqlText,
+		Limit:     *limit,
+		Sensitive: *sensitive,
+		Rebuild:   *rebuild,
 	})
 	if err != nil {
 		fatal(err)
@@ -259,7 +267,7 @@ Subcommands:
 
 Examples:
   oas analytics build -config ./oas.json
-  oas analytics query -config ./oas.json -preset failures
+  oas analytics query -config ./oas.json -preset attention
   oas analytics export -config ./oas.json -output ./exports/analytics
   oas analytics status -config ./oas.json
 

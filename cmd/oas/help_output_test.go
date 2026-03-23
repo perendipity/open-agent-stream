@@ -61,7 +61,7 @@ Subcommands:
 
 Examples:
   oas analytics build -config ./oas.json
-  oas analytics query -config ./oas.json -preset failures
+  oas analytics query -config ./oas.json -preset attention
   oas analytics export -config ./oas.json -output ./exports/analytics
   oas analytics status -config ./oas.json
 

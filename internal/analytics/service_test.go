@@ -257,6 +257,211 @@ func TestBuildRequiresRebuildAfterInterruptedState(t *testing.T) {
 	}
 }
 
+func TestQueryPresetAliasesAndColumns(t *testing.T) {
+	ctx := context.Background()
+	svc, cleanup := newTestService(t, "machine-a")
+	defer cleanup()
+
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "session.started"})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "message.user", Extra: map[string]any{"text": "hi"}})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "command.finished", Extra: map[string]any{"exit_code": 2}})
+
+	columns, rows, _, err := svc.Query(ctx, QueryOptions{Preset: "failures"})
+	if err != nil {
+		t.Fatalf("Query(failures) error = %v", err)
+	}
+	if got, want := strings.Join(columns, ","), "session,source,project,status,failures,failed_cmds,incomplete_cmds,last_seen,age,span"; got != want {
+		t.Fatalf("attention alias columns = %q, want %q", got, want)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Query(failures) rows = %d, want 1", len(rows))
+	}
+
+	columns, rows, _, err = svc.Query(ctx, QueryOptions{Preset: "sessions"})
+	if err != nil {
+		t.Fatalf("Query(sessions) error = %v", err)
+	}
+	if got, want := strings.Join(columns, ","), "session,source,project,events,user_msgs,agent_msgs,commands,last_seen,age,span"; got != want {
+		t.Fatalf("recent_sessions alias columns = %q, want %q", got, want)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Query(sessions) rows = %d, want 1", len(rows))
+	}
+}
+
+func TestQueryProjectsAndSourcesAggregateCounts(t *testing.T) {
+	ctx := context.Background()
+	svc, cleanup := newTestService(t, "machine-a")
+	defer cleanup()
+
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "session.started"})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "message.user", Extra: map[string]any{"text": "hello"}})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "command.finished", Extra: map[string]any{"exit_code": 1}})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-2", Kind: "session.started"})
+
+	columns, rows, _, err := svc.Query(ctx, QueryOptions{Preset: "projects"})
+	if err != nil {
+		t.Fatalf("Query(projects) error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Query(projects) rows = %d, want 1", len(rows))
+	}
+	project := queryRowsToMaps(columns, rows)[0]
+	if got, want := mapInt64(project["sessions"]), int64(2); got != want {
+		t.Fatalf("projects sessions = %d, want %d", got, want)
+	}
+	if got, want := mapInt64(project["events"]), int64(4); got != want {
+		t.Fatalf("projects events = %d, want %d", got, want)
+	}
+	if got, want := mapInt64(project["commands"]), int64(1); got != want {
+		t.Fatalf("projects commands = %d, want %d", got, want)
+	}
+	if got, want := mapInt64(project["failures"]), int64(1); got != want {
+		t.Fatalf("projects failures = %d, want %d", got, want)
+	}
+
+	columns, rows, _, err = svc.Query(ctx, QueryOptions{Preset: "sources"})
+	if err != nil {
+		t.Fatalf("Query(sources) error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Query(sources) rows = %d, want 1", len(rows))
+	}
+	source := queryRowsToMaps(columns, rows)[0]
+	if got, want := mapInt64(source["sessions"]), int64(2); got != want {
+		t.Fatalf("sources sessions = %d, want %d", got, want)
+	}
+	if got, want := mapInt64(source["events"]), int64(4); got != want {
+		t.Fatalf("sources events = %d, want %d", got, want)
+	}
+	if got, want := mapInt64(source["commands"]), int64(1); got != want {
+		t.Fatalf("sources commands = %d, want %d", got, want)
+	}
+	if got, want := mapInt64(source["failures"]), int64(1); got != want {
+		t.Fatalf("sources failures = %d, want %d", got, want)
+	}
+}
+
+func TestQuerySensitivePreviewsAreTransientAndRespectRedaction(t *testing.T) {
+	ctx := context.Background()
+	svc, cleanup := newTestServiceWithConfig(t, config.Config{
+		MachineID: "machine-a",
+		BatchSize: 2,
+		Privacy: config.PrivacyConfig{
+			PerSink: map[string]config.Policy{
+				analyticsSensitivePolicyID: {
+					RedactKeys: []string{"text"},
+				},
+			},
+		},
+	})
+	defer cleanup()
+
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "session.started"})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "message.user", Extra: map[string]any{"text": "hello world"}})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "message.agent", Extra: map[string]any{"text": "done"}})
+
+	columns, rows, status, err := svc.Query(ctx, QueryOptions{
+		Preset:    "attention",
+		Sensitive: true,
+	})
+	if err != nil {
+		t.Fatalf("Query(attention -sensitive) error = %v", err)
+	}
+	if got, want := strings.Join(columns, ","), "session,source,project,status,failures,failed_cmds,incomplete_cmds,last_seen,age,span,content_status,first_user_preview,last_agent_preview"; got != want {
+		t.Fatalf("sensitive columns = %q, want %q", got, want)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("sensitive rows = %d, want 1", len(rows))
+	}
+	row := queryRowsToMaps(columns, rows)[0]
+	if got, want := mapString(row["content_status"]), "redacted"; got != want {
+		t.Fatalf("content_status = %q, want %q", got, want)
+	}
+	if got, want := mapString(row["first_user_preview"]), "[REDACTED]"; got != want {
+		t.Fatalf("first_user_preview = %q, want %q", got, want)
+	}
+	if got, want := mapString(row["last_agent_preview"]), "[REDACTED]"; got != want {
+		t.Fatalf("last_agent_preview = %q, want %q", got, want)
+	}
+
+	db, err := openDuckDB(status.Path)
+	if err != nil {
+		t.Fatalf("openDuckDB() error = %v", err)
+	}
+	defer db.Close()
+	queryColumns, _, err := runQuery(ctx, db, `SELECT * FROM event_facts LIMIT 1`)
+	if err != nil {
+		t.Fatalf("runQuery(event_facts) error = %v", err)
+	}
+	for _, forbidden := range []string{"content_status", "first_user_preview", "last_agent_preview"} {
+		for _, column := range queryColumns {
+			if column == forbidden {
+				t.Fatalf("event_facts unexpectedly exposed sensitive column %q", forbidden)
+			}
+		}
+	}
+}
+
+func TestQuerySensitiveFilteredByPolicy(t *testing.T) {
+	ctx := context.Background()
+	svc, cleanup := newTestServiceWithConfig(t, config.Config{
+		MachineID: "machine-a",
+		BatchSize: 2,
+		Privacy: config.PrivacyConfig{
+			PerSink: map[string]config.Policy{
+				analyticsSensitivePolicyID: {
+					DeniedPaths: []string{"repo://project"},
+				},
+			},
+		},
+	})
+	defer cleanup()
+
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "session.started"})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "message.user", Extra: map[string]any{"text": "hello world"}})
+
+	columns, rows, _, err := svc.Query(ctx, QueryOptions{
+		Preset:    "recent_sessions",
+		Sensitive: true,
+	})
+	if err != nil {
+		t.Fatalf("Query(recent_sessions -sensitive) error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("sensitive filtered rows = %d, want 1", len(rows))
+	}
+	row := queryRowsToMaps(columns, rows)[0]
+	if got, want := mapString(row["content_status"]), "filtered"; got != want {
+		t.Fatalf("content_status = %q, want %q", got, want)
+	}
+	if got := mapString(row["first_user_preview"]); got != "-" {
+		t.Fatalf("first_user_preview = %q, want -", got)
+	}
+}
+
+func TestQueryRejectsSensitiveSQLAndNegativeLimit(t *testing.T) {
+	ctx := context.Background()
+	svc, cleanup := newTestService(t, "machine-a")
+	defer cleanup()
+
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "session.started"})
+
+	if _, _, _, err := svc.Query(ctx, QueryOptions{
+		SQL:       "select 1",
+		Sensitive: true,
+	}); err == nil || !strings.Contains(err.Error(), "-sensitive") {
+		t.Fatalf("Query(sql+sensitive) error = %v, want -sensitive conflict", err)
+	}
+
+	if _, _, _, err := svc.Query(ctx, QueryOptions{
+		Preset: "overview",
+		Limit:  -1,
+	}); err == nil || !strings.Contains(err.Error(), "-limit") {
+		t.Fatalf("Query(limit=-1) error = %v, want limit validation", err)
+	}
+}
+
 type testEnvelope struct {
 	SessionKey string
 	Kind       string
@@ -266,15 +471,22 @@ type testEnvelope struct {
 
 func newTestService(t *testing.T, machineID string) (*Service, func()) {
 	t.Helper()
+	return newTestServiceWithConfig(t, config.Config{
+		MachineID: machineID,
+		BatchSize: 2,
+	})
+}
+
+func newTestServiceWithConfig(t *testing.T, cfg config.Config) (*Service, func()) {
+	t.Helper()
 	dir := t.TempDir()
 	store, err := ledger.Open(filepath.Join(dir, "ledger.db"))
 	if err != nil {
 		t.Fatalf("ledger.Open() error = %v", err)
 	}
-	cfg := config.Config{
-		MachineID: machineID,
-		DataDir:   dir,
-		BatchSize: 2,
+	cfg.DataDir = dir
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 2
 	}
 	return New(cfg, store), func() {
 		_ = store.Close()
