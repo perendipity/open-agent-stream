@@ -3,7 +3,9 @@ package storageguard
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,5 +89,51 @@ func TestEnforcePrunesLedgerWhenOverBudget(t *testing.T) {
 	}
 	if len(records) != 0 {
 		t.Fatalf("len(records) = %d, want 0 after prune", len(records))
+	}
+}
+
+func TestInspectReportsBudgetPressure(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{
+		MachineID:        "test-machine",
+		StatePath:        filepath.Join(dir, "state.db"),
+		LedgerPath:       filepath.Join(dir, "ledger.db"),
+		MaxStorageBytes:  150,
+		PruneTargetBytes: 100,
+		MinFreeBytes:     1,
+	}
+
+	if err := os.WriteFile(cfg.StatePath, []byte(strings.Repeat("s", 80)), 0o644); err != nil {
+		t.Fatalf("WriteFile(state) error = %v", err)
+	}
+	if err := os.WriteFile(cfg.LedgerPath, []byte(strings.Repeat("l", 90)), 0o644); err != nil {
+		t.Fatalf("WriteFile(ledger) error = %v", err)
+	}
+
+	guard := New(cfg, nil, nil)
+	report, err := guard.Inspect()
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !report.NeedsEnforcement {
+		t.Fatal("Inspect() expected NeedsEnforcement")
+	}
+	if got, want := report.MaxStorageBytes, int64(150); got != want {
+		t.Fatalf("MaxStorageBytes = %d, want %d", got, want)
+	}
+	if got, want := report.PruneTargetBytes, int64(100); got != want {
+		t.Fatalf("PruneTargetBytes = %d, want %d", got, want)
+	}
+	if got, want := report.DesiredUsageBytes, int64(100); got != want {
+		t.Fatalf("DesiredUsageBytes = %d, want %d", got, want)
+	}
+	if report.UsageBytes < 170 {
+		t.Fatalf("UsageBytes = %d, want >= 170", report.UsageBytes)
+	}
+	if !strings.Contains(report.Reason, "usage") {
+		t.Fatalf("Reason = %q, want usage-based pressure detail", report.Reason)
+	}
+	if len(report.ManagedPaths) == 0 {
+		t.Fatal("ManagedPaths unexpectedly empty")
 	}
 }

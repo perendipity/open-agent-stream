@@ -152,7 +152,20 @@ go run ./cmd/oas daemon status -config ./oas.json -json
 go run ./cmd/oas daemon stop -config ./oas.json
 ```
 
-### 7. Replay when you want to re-deliver ledger history
+`oas daemon status` now surfaces current storage usage, configured limits, and
+the most recent storage-guard event it can recover from the daemon log.
+
+### 7. Run operational checks
+
+```bash
+go run ./cmd/oas doctor -config ./oas.json
+go run ./cmd/oas doctor -config ./oas.json -json
+```
+
+`oas doctor` prints a readable table by default and supports `-json` for
+automation.
+
+### 8. Replay when you want to re-deliver ledger history
 
 ```bash
 go run ./cmd/oas replay -config ./oas.json

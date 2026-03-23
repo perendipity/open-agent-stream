@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
+	"github.com/open-agent-stream/open-agent-stream/internal/storageguard"
 	"github.com/open-agent-stream/open-agent-stream/internal/supervisor"
 )
 
@@ -33,6 +35,31 @@ type daemonMetadata struct {
 	PollInterval         string `json:"poll_interval"`
 	ErrorBackoff         string `json:"error_backoff"`
 	MaxConsecutiveErrors int    `json:"max_consecutive_errors"`
+}
+
+type daemonStorageStatus struct {
+	Configured        bool                   `json:"configured"`
+	UsageBytes        int64                  `json:"usage_bytes"`
+	FreeBytes         uint64                 `json:"free_bytes,omitempty"`
+	ManagedPaths      []string               `json:"managed_paths,omitempty"`
+	MaxStorageBytes   int64                  `json:"max_storage_bytes,omitempty"`
+	PruneTargetBytes  int64                  `json:"prune_target_bytes,omitempty"`
+	DesiredUsageBytes int64                  `json:"desired_usage_bytes,omitempty"`
+	MinFreeBytes      int64                  `json:"min_free_bytes,omitempty"`
+	NeedsEnforcement  bool                   `json:"needs_enforcement,omitempty"`
+	Reason            string                 `json:"reason,omitempty"`
+	LastActivity      *daemonStorageActivity `json:"last_activity,omitempty"`
+}
+
+type daemonStorageActivity struct {
+	Timestamp       string `json:"timestamp,omitempty"`
+	Outcome         string `json:"outcome,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	UsageBytes      int64  `json:"usage_bytes,omitempty"`
+	FreeBytes       uint64 `json:"free_bytes,omitempty"`
+	PrunedRecords   int64  `json:"pruned_records,omitempty"`
+	SafePruneOffset int64  `json:"safe_prune_offset,omitempty"`
+	Raw             string `json:"raw,omitempty"`
 }
 
 func daemonStartCommand(args []string) {
@@ -76,7 +103,7 @@ func daemonStatusCommand(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas daemon status -config <path> [flags]
 
-Show daemon status, metadata, and resolved control-file paths.
+Show daemon status, storage visibility, and resolved control-file paths.
 
 Flags:
 `)
@@ -98,6 +125,7 @@ Examples:
 	paths := daemonPathsFor(cfg)
 	metadata, _ := readDaemonMetadata(paths.metaPath)
 	pid, running := readPID(paths.pidPath, metadata)
+	storageStatus, storageErr := daemonStorageStatusFor(cfg, paths.logPath)
 
 	payload := map[string]any{
 		"running":                running,
@@ -110,6 +138,11 @@ Examples:
 		"poll_interval":          metadata.PollInterval,
 		"error_backoff":          metadata.ErrorBackoff,
 		"max_consecutive_errors": metadata.MaxConsecutiveErrors,
+	}
+	if storageErr != nil {
+		payload["storage_error"] = storageErr.Error()
+	} else {
+		payload["storage"] = storageStatus
 	}
 	if *asJSON {
 		if err := writeJSON(os.Stdout, payload); err != nil {
@@ -142,6 +175,39 @@ Examples:
 	}
 	if metadata.MaxConsecutiveErrors > 0 {
 		fmt.Printf("Max consecutive errors: %d\n", metadata.MaxConsecutiveErrors)
+	}
+	if storageErr != nil {
+		fmt.Printf("Storage: error: %v\n", storageErr)
+		return
+	}
+	fmt.Println("Storage:")
+	fmt.Printf("  Usage bytes: %d\n", storageStatus.UsageBytes)
+	fmt.Printf("  Managed paths: %d\n", len(storageStatus.ManagedPaths))
+	if storageStatus.MaxStorageBytes > 0 {
+		fmt.Printf("  Max storage bytes: %d\n", storageStatus.MaxStorageBytes)
+	}
+	if storageStatus.DesiredUsageBytes > 0 {
+		fmt.Printf("  Desired usage bytes: %d\n", storageStatus.DesiredUsageBytes)
+	}
+	if storageStatus.FreeBytes > 0 {
+		fmt.Printf("  Free bytes: %d\n", storageStatus.FreeBytes)
+	}
+	if storageStatus.MinFreeBytes > 0 {
+		fmt.Printf("  Min free bytes: %d\n", storageStatus.MinFreeBytes)
+	}
+	if storageStatus.NeedsEnforcement {
+		fmt.Printf("  Needs enforcement: yes (%s)\n", storageStatus.Reason)
+	} else {
+		fmt.Println("  Needs enforcement: no")
+	}
+	if storageStatus.LastActivity != nil {
+		fmt.Printf("  Last storage event: %s at %s\n", storageStatus.LastActivity.Outcome, storageStatus.LastActivity.Timestamp)
+		if storageStatus.LastActivity.PrunedRecords > 0 {
+			fmt.Printf("  Last pruned records: %d\n", storageStatus.LastActivity.PrunedRecords)
+		}
+		if storageStatus.LastActivity.Reason != "" {
+			fmt.Printf("  Last event detail: %s\n", storageStatus.LastActivity.Reason)
+		}
 	}
 }
 
@@ -392,6 +458,130 @@ func clearStaleDaemonFiles(paths daemonPaths) {
 	if _, running := readPID(paths.pidPath, metadata); !running {
 		clearDaemonFiles(paths)
 	}
+}
+
+func daemonStorageStatusFor(cfg config.Config, logPath string) (daemonStorageStatus, error) {
+	guard := storageguard.New(cfg, nil, nil)
+	report, err := guard.Inspect()
+	if err != nil {
+		return daemonStorageStatus{}, err
+	}
+	status := daemonStorageStatus{
+		Configured:        report.MaxStorageBytes > 0 || report.MinFreeBytes > 0 || report.PruneTargetBytes > 0,
+		UsageBytes:        report.UsageBytes,
+		FreeBytes:         report.FreeBytes,
+		ManagedPaths:      append([]string(nil), report.ManagedPaths...),
+		MaxStorageBytes:   report.MaxStorageBytes,
+		PruneTargetBytes:  report.PruneTargetBytes,
+		DesiredUsageBytes: report.DesiredUsageBytes,
+		MinFreeBytes:      report.MinFreeBytes,
+		NeedsEnforcement:  report.NeedsEnforcement,
+		Reason:            report.Reason,
+	}
+	activity, err := readLastStorageActivity(logPath)
+	if err != nil {
+		return status, err
+	}
+	status.LastActivity = activity
+	return status, nil
+}
+
+func readLastStorageActivity(logPath string) (*daemonStorageActivity, error) {
+	file, err := os.Open(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var last string
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.Contains(line, "storage guard") {
+			last = line
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if last == "" {
+		return nil, nil
+	}
+	activity, ok := parseDaemonStorageActivity(last)
+	if !ok {
+		return nil, nil
+	}
+	return &activity, nil
+}
+
+func parseDaemonStorageActivity(line string) (daemonStorageActivity, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return daemonStorageActivity{}, false
+	}
+	activity := daemonStorageActivity{Raw: line}
+	if strings.HasPrefix(line, "[") {
+		if end := strings.Index(line, "] "); end > 1 {
+			activity.Timestamp = line[1:end]
+			line = line[end+2:]
+		}
+	}
+	switch {
+	case strings.HasPrefix(line, "storage guard: "):
+		activity.Outcome = "enforced"
+		body := strings.TrimPrefix(line, "storage guard: ")
+		var ok bool
+		var value string
+		body, value, ok = cutLastField(body, " safe_prune_offset=")
+		if ok {
+			activity.SafePruneOffset = parseInt64Default(value)
+		}
+		body, value, ok = cutLastField(body, " pruned_records=")
+		if ok {
+			activity.PrunedRecords = parseInt64Default(value)
+		}
+		body, value, ok = cutLastField(body, " free_bytes=")
+		if ok {
+			activity.FreeBytes = uint64(parseInt64Default(value))
+		}
+		body, value, ok = cutLastField(body, " usage_bytes=")
+		if ok {
+			activity.UsageBytes = parseInt64Default(value)
+		}
+		body = strings.TrimSpace(strings.TrimPrefix(body, "reason="))
+		activity.Reason = body
+		return activity, true
+	case strings.HasPrefix(line, "storage guard failed"):
+		activity.Outcome = "failed"
+		if idx := strings.Index(line, ": "); idx >= 0 {
+			activity.Reason = strings.TrimSpace(line[idx+2:])
+		} else {
+			activity.Reason = line
+		}
+		return activity, true
+	default:
+		return daemonStorageActivity{}, false
+	}
+}
+
+func cutLastField(value, separator string) (string, string, bool) {
+	idx := strings.LastIndex(value, separator)
+	if idx < 0 {
+		return value, "", false
+	}
+	return value[:idx], value[idx+len(separator):], true
+}
+
+func parseInt64Default(value string) int64 {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func daemonProcessMatches(pid int, metadata daemonMetadata) bool {

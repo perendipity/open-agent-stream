@@ -326,10 +326,11 @@ Examples:
 func doctorCommand(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
+	jsonOutput := fs.Bool("json", false, "print structured JSON instead of a table")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas doctor -config <path>
 
-Run operational checks and print results as JSON.
+Run operational checks and print a readable table by default.
 
 Flags:
 `)
@@ -337,6 +338,7 @@ Flags:
 		fmt.Fprintf(os.Stderr, `
 Examples:
   oas doctor -config ./examples/config.example.json
+  oas doctor -config ./examples/config.example.json -json
 `)
 	}
 	_ = fs.Parse(args)
@@ -348,7 +350,13 @@ Examples:
 	if err != nil {
 		fatal(err)
 	}
-	if err := supervisor.WriteChecks(os.Stdout, checks); err != nil {
+	if *jsonOutput {
+		if err := supervisor.WriteChecksJSON(os.Stdout, checks); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if err := supervisor.WriteChecksTable(os.Stdout, checks); err != nil {
 		fatal(err)
 	}
 }
@@ -406,7 +414,7 @@ Subcommands:
   run       Run the daemon in the foreground
   start     Start a detached daemon
   stop      Stop a detached daemon
-  status    Show daemon status and resolved file paths
+  status    Show daemon status, storage visibility, and resolved file paths
   restart   Restart a detached daemon
 
 Examples:

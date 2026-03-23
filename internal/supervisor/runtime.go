@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
@@ -307,6 +308,42 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 			checks = append(checks, health.CheckWritablePath(ctx, "sink-path:"+sinkCfg.ID, path))
 		}
 	}
+	if r.storage != nil {
+		report, err := r.storage.Inspect()
+		if err != nil {
+			checks = append(checks, health.Check{
+				Name:   "storage_guard",
+				Status: "fail",
+				Detail: err.Error(),
+			})
+		} else {
+			status := "ok"
+			if report.NeedsEnforcement {
+				status = "warn"
+			}
+			detail := fmt.Sprintf("usage_bytes=%d managed_paths=%d", report.UsageBytes, len(report.ManagedPaths))
+			if report.MaxStorageBytes > 0 {
+				detail += fmt.Sprintf(" max_storage_bytes=%d", report.MaxStorageBytes)
+			}
+			if report.DesiredUsageBytes > 0 {
+				detail += fmt.Sprintf(" desired_usage_bytes=%d", report.DesiredUsageBytes)
+			}
+			if report.FreeBytes > 0 {
+				detail += fmt.Sprintf(" free_bytes=%d", report.FreeBytes)
+			}
+			if report.MinFreeBytes > 0 {
+				detail += fmt.Sprintf(" min_free_bytes=%d", report.MinFreeBytes)
+			}
+			if report.Reason != "" {
+				detail += fmt.Sprintf(" reason=%s", report.Reason)
+			}
+			checks = append(checks, health.Check{
+				Name:   "storage_guard",
+				Status: status,
+				Detail: detail,
+			})
+		}
+	}
 	return checks, nil
 }
 
@@ -448,10 +485,23 @@ func buildSinks(configs []sinkapi.Config) ([]sinkapi.Sink, map[string]sinkmeta.I
 	return sinks, info, nil
 }
 
-func WriteChecks(writer io.Writer, checks []health.Check) error {
+func WriteChecksJSON(writer io.Writer, checks []health.Check) error {
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(checks)
+}
+
+func WriteChecksTable(writer io.Writer, checks []health.Check) error {
+	table := tabwriter.NewWriter(writer, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(table, "NAME\tSTATUS\tDETAIL"); err != nil {
+		return err
+	}
+	for _, check := range checks {
+		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\n", check.Name, check.Status, check.Detail); err != nil {
+			return err
+		}
+	}
+	return table.Flush()
 }
 
 func waitForNextCycle(ctx context.Context, d time.Duration) error {

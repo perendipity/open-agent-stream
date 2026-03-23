@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -21,25 +22,31 @@ type Guard struct {
 }
 
 type Report struct {
-	UsageBytes      int64
-	FreeBytes       uint64
-	PrunedRecords   int64
-	Enforced        bool
-	Reason          string
-	ManagedPaths    []string
-	SafePruneOffset int64
+	UsageBytes        int64
+	FreeBytes         uint64
+	PrunedRecords     int64
+	Enforced          bool
+	NeedsEnforcement  bool
+	Reason            string
+	ManagedPaths      []string
+	SafePruneOffset   int64
+	MaxStorageBytes   int64
+	PruneTargetBytes  int64
+	DesiredUsageBytes int64
+	MinFreeBytes      int64
 }
 
 func New(cfg config.Config, ledgerStore *ledger.Store, stateStore *state.Store) *Guard {
 	return &Guard{cfg: cfg, ledger: ledgerStore, state: stateStore}
 }
 
-func (g *Guard) Enforce(_ context.Context, normalizationOffset int64) (Report, error) {
+func (g *Guard) Inspect() (Report, error) {
 	report := Report{}
 	if g == nil {
 		return report, nil
 	}
 	managed := g.managedPaths()
+	sort.Strings(managed)
 	report.ManagedPaths = append(report.ManagedPaths, managed...)
 	usage, err := totalSize(managed)
 	if err != nil {
@@ -59,23 +66,34 @@ func (g *Guard) Enforce(_ context.Context, normalizationOffset int64) (Report, e
 	if pruneTarget > 0 {
 		desiredUsage = pruneTarget
 	}
+	report.MaxStorageBytes = maxBytes
+	report.PruneTargetBytes = pruneTarget
+	report.DesiredUsageBytes = desiredUsage
+	report.MinFreeBytes = minFree
 
-	needsEnforcement := false
 	var reasons []string
 	if maxBytes > 0 && usage > maxBytes {
-		needsEnforcement = true
+		report.NeedsEnforcement = true
 		reasons = append(reasons, fmt.Sprintf("usage %d > max %d", usage, maxBytes))
 	}
 	if minFree > 0 && report.FreeBytes > 0 && report.FreeBytes < uint64(minFree) {
-		needsEnforcement = true
+		report.NeedsEnforcement = true
 		reasons = append(reasons, fmt.Sprintf("free %d < min %d", report.FreeBytes, minFree))
 	}
-	if !needsEnforcement {
+	report.Reason = strings.Join(reasons, "; ")
+	return report, nil
+}
+
+func (g *Guard) Enforce(_ context.Context, normalizationOffset int64) (Report, error) {
+	report, err := g.Inspect()
+	if err != nil {
+		return report, err
+	}
+	if !report.NeedsEnforcement {
 		return report, nil
 	}
 
 	report.Enforced = true
-	report.Reason = strings.Join(reasons, "; ")
 
 	minSinkOffset, ok, err := g.state.MinimumSinkCheckpointOffset()
 	if err != nil {
@@ -106,18 +124,18 @@ func (g *Guard) Enforce(_ context.Context, normalizationOffset int64) (Report, e
 		return report, err
 	}
 
-	usage, err = totalSize(managed)
+	usage, err := totalSize(report.ManagedPaths)
 	if err == nil {
 		report.UsageBytes = usage
 	}
 	if free, err := freeBytes(filepath.Dir(g.cfg.StatePath)); err == nil {
 		report.FreeBytes = free
 	}
-	if desiredUsage > 0 && report.UsageBytes > desiredUsage {
-		return report, fmt.Errorf("storage usage remains above target after pruning: usage=%d target=%d max=%d pruned_records=%d", report.UsageBytes, desiredUsage, maxBytes, report.PrunedRecords)
+	if report.DesiredUsageBytes > 0 && report.UsageBytes > report.DesiredUsageBytes {
+		return report, fmt.Errorf("storage usage remains above target after pruning: usage=%d target=%d max=%d pruned_records=%d", report.UsageBytes, report.DesiredUsageBytes, report.MaxStorageBytes, report.PrunedRecords)
 	}
-	if minFree > 0 && report.FreeBytes > 0 && report.FreeBytes < uint64(minFree) {
-		return report, fmt.Errorf("free bytes remain below minimum after pruning: free=%d min=%d pruned_records=%d", report.FreeBytes, minFree, report.PrunedRecords)
+	if report.MinFreeBytes > 0 && report.FreeBytes > 0 && report.FreeBytes < uint64(report.MinFreeBytes) {
+		return report, fmt.Errorf("free bytes remain below minimum after pruning: free=%d min=%d pruned_records=%d", report.FreeBytes, report.MinFreeBytes, report.PrunedRecords)
 	}
 	return report, nil
 }
