@@ -15,6 +15,7 @@ Usage:
   oas <command> [flags]
 
 Core commands:
+  version   Print the installed CLI version
   run       Run one ingestion/normalization/delivery cycle
   daemon    Manage continuous daemon mode
   config    Initialize, inspect, or validate config
@@ -31,6 +32,7 @@ Use:
   oas config --help
 
 Common starts:
+  oas version
   oas config init -output ./oas.json
   oas run -config ./oas.json
   oas daemon start -config ./oas.json

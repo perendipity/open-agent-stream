@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -31,6 +32,8 @@ func main() {
 	case "--help", "-h", "help":
 		usage()
 		return
+	case "version":
+		versionCommand()
 	case "run":
 		runCommand(ctx, os.Args[2:])
 	case "daemon":
@@ -389,6 +392,26 @@ func validateCommand(args []string) {
 	configValidateCommandWithName(args, "validate")
 }
 
+func versionCommand() {
+	fmt.Fprintln(os.Stdout, versionString())
+}
+
+func versionString() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return versionStringForBuildInfo(info)
+	}
+	return versionStringForBuildInfo(nil)
+}
+
+func versionStringForBuildInfo(info *debug.BuildInfo) string {
+	if info != nil {
+		if version := strings.TrimSpace(info.Main.Version); version != "" && version != "(devel)" {
+			return "oas " + version
+		}
+	}
+	return "oas dev"
+}
+
 func mustRuntime(configPath string) *supervisor.Runtime {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -418,6 +441,7 @@ Usage:
   oas <command> [flags]
 
 Core commands:
+  version   Print the installed CLI version
   run       Run one ingestion/normalization/delivery cycle
   daemon    Manage continuous daemon mode
   config    Initialize, inspect, or validate config
@@ -434,6 +458,7 @@ Use:
   oas config --help
 
 Common starts:
+  oas version
   oas config init -output ./oas.json
   oas run -config ./oas.json
   oas daemon start -config ./oas.json

@@ -12,7 +12,9 @@ Read the repo in this order:
 8. [`governance/compatibility-matrix.md`](governance/compatibility-matrix.md)
 9. [`governance/cli-standards.md`](governance/cli-standards.md)
 10. [`roadmap/cli-usability.md`](roadmap/cli-usability.md)
-11. [`roadmap/milestones.md`](roadmap/milestones.md)
+11. [`adoption/install.md`](adoption/install.md)
+12. [`adoption/early-adopters.md`](adoption/early-adopters.md)
+13. [`roadmap/milestones.md`](roadmap/milestones.md)
 
 ## Structure
 
@@ -20,4 +22,5 @@ Read the repo in this order:
 - `/architecture`: the core pipeline and data/operational model
 - `/governance`: how the standard evolves
 - `/integrations`: third-party adapter/sink authoring guidance
+- `/adoption`: install guidance and early-adopter operating notes
 - `/roadmap`: release framing and adoption criteria

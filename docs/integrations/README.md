@@ -3,6 +3,20 @@
 This guide is the fastest way to understand how to extend OAS without depending
 on `/internal`.
 
+## Choose your path first
+
+Today there are three realistic ways to extend OAS:
+
+1. **Use the built-in types as-is** if the existing adapters and sinks already
+   cover your workflow.
+2. **Upstream a new adapter or sink here** if you want support in the stock
+   `oas` CLI for everyone.
+3. **Maintain a custom CLI overlay** if you want to author against the public
+   contracts now without waiting for the stock runtime to load external plugins.
+
+The important distinction is that the **contracts are ready before the runtime
+plugin boundary is finalized**.
+
 ## What is stable today
 
 Build against these published surfaces:
@@ -158,6 +172,9 @@ practice, that means end-to-end integration still happens in one of two ways:
 
 That limitation is about runtime registration, not about the published adapter
 and sink contracts.
+
+See [RFC 0002](../../rfcs/0002-external-plugin-runtime.md) for the current
+reasoning behind that boundary.
 
 ## Recommended starting order
 
