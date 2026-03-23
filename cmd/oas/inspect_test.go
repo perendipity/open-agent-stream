@@ -153,6 +153,73 @@ func TestInspectSessionKeepsIncompleteCommandRowsVisible(t *testing.T) {
 	}
 }
 
+func TestInspectSessionPairsInterleavedCommandsByCallID(t *testing.T) {
+	input := strings.NewReader(strings.TrimSpace(`
+{"event_version":1,"event_id":"evt_1","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":1,"timestamp":"2026-03-22T10:00:00Z","kind":"command.started","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"command":"go test ./...","payload":{"call_id":"call_1","name":"exec_command","type":"function_call"}},"raw_ref":{"ledger_offset":1,"envelope_id":"env_1"}}
+{"event_version":1,"event_id":"evt_2","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":2,"timestamp":"2026-03-22T10:00:01Z","kind":"command.started","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"command":"go vet ./...","payload":{"call_id":"call_2","name":"exec_command","type":"function_call"}},"raw_ref":{"ledger_offset":2,"envelope_id":"env_2"}}
+{"event_version":1,"event_id":"evt_3","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":3,"timestamp":"2026-03-22T10:00:03Z","kind":"command.finished","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"exit_code":0,"payload":{"call_id":"call_1","output":"Command: /bin/bash -lc go test ./...\nChunk ID: a1\nWall time: 0.0000 seconds\nProcess exited with code 0\nOutput:\n","type":"function_call_output"}},"raw_ref":{"ledger_offset":3,"envelope_id":"env_3"}}
+{"event_version":1,"event_id":"evt_4","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":4,"timestamp":"2026-03-22T10:00:05Z","kind":"command.finished","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"exit_code":1,"payload":{"call_id":"call_2","output":"Command: /bin/bash -lc go vet ./...\nChunk ID: a2\nWall time: 0.0000 seconds\nProcess exited with code 1\nOutput:\n","type":"function_call_output"}},"raw_ref":{"ledger_offset":4,"envelope_id":"env_4"}}
+`))
+
+	inspection, err := inspectSession(input, "sess_a", "all", 0, 0)
+	if err != nil {
+		t.Fatalf("inspectSession error: %v", err)
+	}
+	if got, want := len(inspection.Commands), 2; got != want {
+		t.Fatalf("len(Commands) = %d, want %d", got, want)
+	}
+	if got, want := inspection.Commands[0].Status, "completed"; got != want {
+		t.Fatalf("Commands[0].Status = %q, want %q", got, want)
+	}
+	if got, want := inspection.Commands[0].Command, "go test ./..."; got != want {
+		t.Fatalf("Commands[0].Command = %q, want %q", got, want)
+	}
+	if inspection.Commands[0].FinishSequence == nil || *inspection.Commands[0].FinishSequence != 3 {
+		t.Fatalf("Commands[0].FinishSequence = %v, want 3", inspection.Commands[0].FinishSequence)
+	}
+	if got, want := inspection.Commands[1].Status, "completed"; got != want {
+		t.Fatalf("Commands[1].Status = %q, want %q", got, want)
+	}
+	if got, want := inspection.Commands[1].Command, "go vet ./..."; got != want {
+		t.Fatalf("Commands[1].Command = %q, want %q", got, want)
+	}
+	if inspection.Commands[1].FinishSequence == nil || *inspection.Commands[1].FinishSequence != 4 {
+		t.Fatalf("Commands[1].FinishSequence = %v, want 4", inspection.Commands[1].FinishSequence)
+	}
+	if inspection.Commands[1].ExitCode == nil || *inspection.Commands[1].ExitCode != 1 {
+		t.Fatalf("Commands[1].ExitCode = %v, want 1", inspection.Commands[1].ExitCode)
+	}
+}
+
+func TestInspectSessionPairsInterleavedCommandsByCommandWhenCallIDMissing(t *testing.T) {
+	input := strings.NewReader(strings.TrimSpace(`
+{"event_version":1,"event_id":"evt_1","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":1,"timestamp":"2026-03-22T10:00:00Z","kind":"command.started","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"command":"one"},"raw_ref":{"ledger_offset":1,"envelope_id":"env_1"}}
+{"event_version":1,"event_id":"evt_2","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":2,"timestamp":"2026-03-22T10:00:01Z","kind":"command.started","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"command":"two"},"raw_ref":{"ledger_offset":2,"envelope_id":"env_2"}}
+{"event_version":1,"event_id":"evt_3","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":3,"timestamp":"2026-03-22T10:00:02Z","kind":"command.finished","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"command":"one","exit_code":0},"raw_ref":{"ledger_offset":3,"envelope_id":"env_3"}}
+{"event_version":1,"event_id":"evt_4","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":4,"timestamp":"2026-03-22T10:00:03Z","kind":"command.finished","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"command":"two","exit_code":0},"raw_ref":{"ledger_offset":4,"envelope_id":"env_4"}}
+`))
+
+	inspection, err := inspectSession(input, "sess_a", "all", 0, 0)
+	if err != nil {
+		t.Fatalf("inspectSession error: %v", err)
+	}
+	if got, want := len(inspection.Commands), 2; got != want {
+		t.Fatalf("len(Commands) = %d, want %d", got, want)
+	}
+	if got, want := inspection.Commands[0].Status, "completed"; got != want {
+		t.Fatalf("Commands[0].Status = %q, want %q", got, want)
+	}
+	if got, want := inspection.Commands[0].Command, "one"; got != want {
+		t.Fatalf("Commands[0].Command = %q, want %q", got, want)
+	}
+	if got, want := inspection.Commands[1].Status, "completed"; got != want {
+		t.Fatalf("Commands[1].Status = %q, want %q", got, want)
+	}
+	if got, want := inspection.Commands[1].Command, "two"; got != want {
+		t.Fatalf("Commands[1].Command = %q, want %q", got, want)
+	}
+}
+
 func TestInspectSessionFiltersCommandRowsByAttention(t *testing.T) {
 	input := strings.NewReader(strings.TrimSpace(`
 {"event_version":1,"event_id":"evt_1","source_type":"codex_local","source_instance_id":"codex-a","session_key":"sess_a","sequence":1,"timestamp":"2026-03-22T10:00:00Z","kind":"command.started","actor":{"kind":"tool","name":"shell"},"context":{},"payload":{"command":"ok"},"raw_ref":{"ledger_offset":1,"envelope_id":"env_1"}}
