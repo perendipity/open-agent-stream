@@ -91,28 +91,28 @@ func Validate(cfg Config) error {
 		errs = append(errs, fmt.Errorf("min_free_bytes: %w", err))
 	}
 	if len(cfg.Sources) == 0 {
-		errs = append(errs, errors.New("at least one source is required"))
+		errs = append(errs, errors.New("sources: at least one source is required"))
 	}
 	if len(cfg.Sinks) == 0 {
-		errs = append(errs, errors.New("at least one sink is required"))
+		errs = append(errs, errors.New("sinks: at least one sink is required"))
 	}
-	for _, source := range cfg.Sources {
+	for i, source := range cfg.Sources {
 		if source.InstanceID == "" {
-			errs = append(errs, errors.New("source.instance_id is required"))
+			errs = append(errs, fmt.Errorf("sources[%d].instance_id: is required", i))
 		}
 		if source.Type == "" {
-			errs = append(errs, errors.New("source.type is required"))
+			errs = append(errs, fmt.Errorf("sources[%d].type: is required", i))
 		}
 		if source.Root == "" {
-			errs = append(errs, errors.New("source.root is required"))
+			errs = append(errs, fmt.Errorf("sources[%d].root: is required", i))
 		}
 	}
-	for _, sink := range cfg.Sinks {
+	for i, sink := range cfg.Sinks {
 		if sink.ID == "" {
-			errs = append(errs, errors.New("sink.id is required"))
+			errs = append(errs, fmt.Errorf("sinks[%d].id: is required", i))
 		}
 		if sink.Type == "" {
-			errs = append(errs, errors.New("sink.type is required"))
+			errs = append(errs, fmt.Errorf("sinks[%d].type: is required", i))
 		}
 	}
 	if len(errs) > 0 {

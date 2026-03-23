@@ -77,6 +77,10 @@ treated as incomplete.
 
 ## Bar for future additions
 
+This document is the **merge bar** for CLI-facing work. A PR that changes the
+user-facing `oas` surface should be treated as incomplete until the items below
+are handled in the same change.
+
 Before merging a new CLI-facing feature, reviewers should ask:
 
 1. Can a new user discover this from `oas --help` or subcommand help?
@@ -87,3 +91,18 @@ Before merging a new CLI-facing feature, reviewers should ask:
 
 If the answer to several of these is no, the feature is not yet at the desired
 CLI quality bar.
+
+## Minimum checklist for CLI-facing PRs
+
+If a PR changes command behavior, flags, defaults, or operational output, it
+should also include:
+
+- updated help text for the affected command(s)
+- one or more examples for the common path
+- docs updates when the behavior is user-meaningful
+- validation/inspection affordances when new config or runtime behavior is added
+- regression coverage for critical output where practical (for example help
+  snapshots or focused output tests)
+
+Reviewers should push back on CLI-facing changes that add capability without
+also making that capability discoverable and testable.

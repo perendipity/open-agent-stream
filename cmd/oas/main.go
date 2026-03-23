@@ -14,7 +14,6 @@ import (
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
 	"github.com/open-agent-stream/open-agent-stream/internal/supervisor"
-	"github.com/open-agent-stream/open-agent-stream/pkg/conformance"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sinkapi"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
 )
@@ -252,17 +251,9 @@ Validate the config file and fixture/conformance inputs.
 	}
 	_ = fs.Parse(args)
 
-	if *configPath != "" {
-		if _, err := config.Load(*configPath); err != nil {
-			fatal(err)
-		}
-	}
-	absRoot, err := filepath.Abs(*rootPath)
-	if err != nil {
-		fatal(err)
-	}
-	if err := conformance.ValidateFixtures(absRoot); err != nil {
-		fatal(err)
+	report := buildValidationReport(*configPath, *rootPath)
+	if !report.OK() {
+		fatalText(formatValidationFailure(report))
 	}
 	fmt.Println("config and fixtures validated")
 }
@@ -417,7 +408,11 @@ func closeRuntime(ctx context.Context, runtime *supervisor.Runtime) {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `oas - open-agent-stream CLI
+	writeUsage(os.Stderr)
+}
+
+func writeUsage(writer io.Writer) {
+	fmt.Fprintf(writer, `oas - open-agent-stream CLI
 
 Usage:
   oas <command> [flags]
@@ -448,13 +443,17 @@ Common starts:
 }
 
 func daemonUsage() {
-	fmt.Fprintf(os.Stderr, `usage: oas daemon <subcommand> -config <path>
+	writeDaemonUsage(os.Stderr)
+}
+
+func writeDaemonUsage(writer io.Writer) {
+	fmt.Fprintf(writer, `usage: oas daemon <subcommand> -config <path>
 
 Subcommands:
   run       Run the daemon in the foreground
   start     Start a detached daemon
   stop      Stop a detached daemon
-  status    Show daemon status, storage visibility, and resolved file paths
+  status    Show daemon/runtime status, resolved paths, and storage activity
   restart   Restart a detached daemon
 
 Examples:
@@ -470,7 +469,11 @@ Use:
 }
 
 func configUsage() {
-	fmt.Fprintf(os.Stderr, `usage: oas config <subcommand> [flags]
+	writeConfigUsage(os.Stderr)
+}
+
+func writeConfigUsage(writer io.Writer) {
+	fmt.Fprintf(writer, `usage: oas config <subcommand> [flags]
 
 Subcommands:
   init      Write a starter config
@@ -544,6 +547,15 @@ func helpDefaultSuffix(value string) string {
 
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
+	os.Exit(1)
+}
+
+func fatalText(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, message)
 	os.Exit(1)
 }
 

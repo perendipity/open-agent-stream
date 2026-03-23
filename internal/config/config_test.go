@@ -94,3 +94,32 @@ func TestValidateRejectsPruneTargetNotBelowMaxStorage(t *testing.T) {
 		t.Fatalf("Validate error = %v, want mention of prune_target_bytes", err)
 	}
 }
+
+func TestValidateUsesIndexedFieldPathsForNestedConfigErrors(t *testing.T) {
+	cfg := Config{
+		Version:              "0.1",
+		PollInterval:         "3s",
+		ErrorBackoff:         "10s",
+		MaxConsecutiveErrors: 10,
+		Sources: []sourceapi.Config{{
+			Type: "codex_local",
+		}},
+		Sinks: []sinkapi.Config{{
+			Type: "stdout",
+		}},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected Validate to fail")
+	}
+	for _, want := range []string{
+		"sources[0].instance_id",
+		"sources[0].root",
+		"sinks[0].id",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate error = %v, want mention of %q", err, want)
+		}
+	}
+}
