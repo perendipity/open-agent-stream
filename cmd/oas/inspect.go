@@ -97,7 +97,7 @@ func inspectCommand(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON to inspect directly from the ledger")
 	inputPath := fs.String("input", "-", "path to exported JSONL, or - for stdin")
-	sessionKey := fs.String("session", "", "session key from `oas summary`")
+	sessionKey := fs.String("session", "", "session key from the summary output")
 	commandStatus := fs.String("command-status", commandFilterAll, "which collapsed command rows to show: all|attention|failed|incomplete|completed")
 	commandLimit := fs.Int("command-limit", 40, "maximum collapsed command rows to display (0 = all)")
 	timelineLimit := fs.Int("timeline-limit", 40, "maximum representative timeline rows to display")
@@ -115,18 +115,26 @@ Input sources:
   -input -         Read exported JSONL from stdin
   -config <path>   Inspect directly from the configured ledger
 
-Flags:
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas summary -input ./exports/events.jsonl
-  oas inspect -input ./exports/events.jsonl -session sess_123
-  oas inspect -input ./exports/events.jsonl -session sess_123 -command-status attention
-  oas inspect -input ./exports/events.jsonl -session sess_123 -command-limit 0
-  oas export -config ./oas.json | oas inspect -session sess_123
-  oas inspect -config ./oas.json -session sess_123 -json
-`)
+		printFlagSection(os.Stderr, fs, "Common flags",
+			usageFlag{Name: "session", Placeholder: "<session_key>"},
+			usageFlag{Name: "input", Placeholder: "<path|->"},
+			usageFlag{Name: "config", Placeholder: "<path>"},
+		)
+		printFlagSection(os.Stderr, fs, "Advanced flags",
+			usageFlag{Name: "command-status", Placeholder: "<all|attention|failed|incomplete|completed>"},
+			usageFlag{Name: "command-limit", Placeholder: "<n>"},
+			usageFlag{Name: "timeline-limit", Placeholder: "<n>"},
+			usageFlag{Name: "json"},
+		)
+		printExamples(os.Stderr,
+			"oas summary -input ./exports/events.jsonl",
+			"oas inspect -input ./exports/events.jsonl -session sess_123",
+			"oas inspect -input ./exports/events.jsonl -session sess_123 -command-status attention",
+			"oas inspect -input ./exports/events.jsonl -session sess_123 -command-limit 0",
+			"oas export -config ./oas.json | oas inspect -session sess_123",
+			"oas inspect -config ./oas.json -session sess_123 -json",
+		)
 	}
 	_ = fs.Parse(args)
 

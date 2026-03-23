@@ -63,7 +63,16 @@ type daemonStorageActivity struct {
 }
 
 func daemonStartCommand(args []string) {
-	cfg, configPath := mustDaemonConfig(args, "daemon start")
+	cfg, configPath := mustDaemonConfig(args, "daemon start", daemonConfigHelp{
+		Description: "Start a detached daemon process and return immediately.",
+		Notes: []string{
+			"Safe to rerun: if the daemon already appears to be running for this config, OAS prints the existing PID instead of starting a second copy.",
+			"Detached mode writes stdout/stderr to the resolved daemon log path.",
+		},
+		Examples: []string{
+			"oas daemon start -config ./examples/config.example.json",
+		},
+	})
 	paths := daemonPathsFor(cfg)
 	metadata, _ := readDaemonMetadata(paths.metaPath)
 	if pid, running := readPID(paths.pidPath, metadata); running {
@@ -83,7 +92,16 @@ func daemonStartCommand(args []string) {
 }
 
 func daemonStopCommand(args []string) {
-	cfg, _ := mustDaemonConfig(args, "daemon stop")
+	cfg, _ := mustDaemonConfig(args, "daemon stop", daemonConfigHelp{
+		Description: "Stop the detached daemon for this config if it is running.",
+		Notes: []string{
+			"Safe to run when the daemon is already stopped.",
+			"OAS clears stale daemon control files when it can prove the recorded PID is no longer the right daemon.",
+		},
+		Examples: []string{
+			"oas daemon stop -config ./examples/config.example.json",
+		},
+	})
 	paths := daemonPathsFor(cfg)
 	pid, err := stopDaemon(paths, 15*time.Second)
 	if err != nil {
@@ -105,14 +123,17 @@ func daemonStatusCommand(args []string) {
 
 Show daemon status, storage visibility, and resolved control-file paths.
 
-Flags:
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas daemon status -config ./examples/config.example.json
-  oas daemon status -config ./examples/config.example.json -json
-`)
+		printFlagSection(os.Stderr, fs, "Common flags",
+			usageFlag{Name: "config", Placeholder: "<path>"},
+		)
+		printFlagSection(os.Stderr, fs, "Advanced flags",
+			usageFlag{Name: "json"},
+		)
+		printExamples(os.Stderr,
+			"oas daemon status -config ./examples/config.example.json",
+			"oas daemon status -config ./examples/config.example.json -json",
+		)
 	}
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*configPath) == "" {
@@ -212,7 +233,15 @@ Examples:
 }
 
 func daemonRestartCommand(args []string) {
-	cfg, configPath := mustDaemonConfig(args, "daemon restart")
+	cfg, configPath := mustDaemonConfig(args, "daemon restart", daemonConfigHelp{
+		Description: "Stop the detached daemon for this config, then start a new detached process.",
+		Notes: []string{
+			"Useful after changing config values that affect continuous mode or storage behavior.",
+		},
+		Examples: []string{
+			"oas daemon restart -config ./examples/config.example.json",
+		},
+	})
 	paths := daemonPathsFor(cfg)
 	if oldPID, err := stopDaemon(paths, 15*time.Second); err != nil {
 		fatal(err)
@@ -231,12 +260,28 @@ func daemonRestartCommand(args []string) {
 	fmt.Printf("Started daemon (pid=%d, log=%s)\n", pid, paths.logPath)
 }
 
-func mustDaemonConfig(args []string, name string) (config.Config, string) {
+type daemonConfigHelp struct {
+	Description string
+	Notes       []string
+	Examples    []string
+}
+
+func mustDaemonConfig(args []string, name string, help daemonConfigHelp) (config.Config, string) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: oas %s -config <path>\n\nFlags:\n", name)
-		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "usage: oas %s -config <path>\n\n%s\n\n", name, help.Description)
+		printFlagSection(os.Stderr, fs, "Common flags",
+			usageFlag{Name: "config", Placeholder: "<path>"},
+		)
+		if len(help.Notes) > 0 {
+			fmt.Fprintln(os.Stderr, "Notes:")
+			for _, note := range help.Notes {
+				fmt.Fprintf(os.Stderr, "  %s\n", note)
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+		printExamples(os.Stderr, help.Examples...)
 	}
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*configPath) == "" {

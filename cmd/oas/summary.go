@@ -60,17 +60,24 @@ Input sources:
   -input -         Read exported JSONL from stdin (default)
   -config <path>   Summarize directly from the configured ledger
 
-Flags:
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas export -config ./oas.json | oas summary
-  oas summary -input ./exports/events.jsonl
-  oas summary -input ./exports/events.jsonl -sort biggest -limit 10
-  oas summary -input ./exports/events.jsonl -failed
-  oas summary -config ./oas.json -json
-`)
+		printFlagSection(os.Stderr, fs, "Common flags",
+			usageFlag{Name: "input", Placeholder: "<path|->"},
+			usageFlag{Name: "config", Placeholder: "<path>"},
+		)
+		printFlagSection(os.Stderr, fs, "Advanced flags",
+			usageFlag{Name: "sort", Placeholder: "<input|recent|biggest|failed>"},
+			usageFlag{Name: "failed"},
+			usageFlag{Name: "limit", Placeholder: "<n>"},
+			usageFlag{Name: "json"},
+		)
+		printExamples(os.Stderr,
+			"oas export -config ./oas.json | oas summary",
+			"oas summary -input ./exports/events.jsonl",
+			"oas summary -input ./exports/events.jsonl -sort biggest -limit 10",
+			"oas summary -input ./exports/events.jsonl -failed",
+			"oas summary -config ./oas.json -json",
+		)
 	}
 	_ = fs.Parse(args)
 

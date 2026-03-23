@@ -64,13 +64,15 @@ func runCommand(ctx context.Context, args []string) {
 
 Run one ingestion + normalization + delivery cycle.
 
-Flags:
+This is the one-shot path. For continuous collection, use:
+  oas daemon run
+  oas daemon start
+
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas run -config ./examples/config.example.json
-`)
+		printFlagSection(os.Stderr, fs, "Common flags", usageFlag{Name: "config", Placeholder: "<path>"})
+		printExamples(os.Stderr,
+			"oas run -config ./examples/config.example.json",
+		)
 	}
 	_ = fs.Parse(args)
 
@@ -107,7 +109,16 @@ func daemonCommand(ctx context.Context, args []string) {
 }
 
 func daemonRunCommand(ctx context.Context, args []string) {
-	cfg, configPath := mustDaemonConfig(args, "daemon run")
+	cfg, configPath := mustDaemonConfig(args, "daemon run", daemonConfigHelp{
+		Description: "Run the daemon in the foreground until interrupted or until continuous mode exits loudly after repeated failures.",
+		Notes: []string{
+			"Foreground mode is useful under tmux, systemd, or another process supervisor.",
+			"Use `oas daemon start` if you want OAS to detach and return immediately.",
+		},
+		Examples: []string{
+			"oas daemon run -config ./examples/config.example.json",
+		},
+	})
 	if err := runDaemonForeground(ctx, cfg, configPath); err != nil && err != context.Canceled {
 		fatal(err)
 	}
@@ -142,14 +153,12 @@ func configInitCommand(args []string) {
 
 Write a starter config with documented defaults.
 
-Flags:
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas config init
-  oas config init -output ./oas.json
-`)
+		printFlagSection(os.Stderr, fs, "Common flags", usageFlag{Name: "output", Placeholder: "<path|->"})
+		printExamples(os.Stderr,
+			"oas config init",
+			"oas config init -output ./oas.json",
+		)
 	}
 	_ = fs.Parse(args)
 
@@ -183,13 +192,11 @@ func configPrintCommand(args []string) {
 
 Print the effective config after defaults are applied.
 
-Flags:
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas config print -config ./examples/config.example.json
-`)
+		printFlagSection(os.Stderr, fs, "Common flags", usageFlag{Name: "config", Placeholder: "<path>"})
+		printExamples(os.Stderr,
+			"oas config print -config ./examples/config.example.json",
+		)
 	}
 	_ = fs.Parse(args)
 
@@ -213,21 +220,31 @@ Examples:
 }
 
 func configValidateCommand(args []string) {
-	fs := flag.NewFlagSet("config validate", flag.ExitOnError)
+	configValidateCommandWithName(args, "config validate")
+}
+
+func configValidateCommandWithName(args []string, commandName string) {
+	fs := flag.NewFlagSet(commandName, flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
 	rootPath := fs.String("root", ".", "repository root")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `usage: oas config validate -config <path> [flags]
+		fmt.Fprintf(os.Stderr, `usage: oas %s -config <path> [flags]
 
 Validate the config file and fixture/conformance inputs.
 
-Flags:
-`)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas config validate -config ./examples/config.example.json
-`)
+`, commandName)
+		printFlagSection(os.Stderr, fs, "Common flags", usageFlag{Name: "config", Placeholder: "<path>"})
+		printFlagSection(os.Stderr, fs, "Advanced flags", usageFlag{Name: "root", Placeholder: "<path>"})
+		if commandName == "validate" {
+			printExamples(os.Stderr,
+				"oas validate -config ./examples/config.example.json",
+				"oas config validate -config ./examples/config.example.json",
+			)
+			return
+		}
+		printExamples(os.Stderr,
+			"oas config validate -config ./examples/config.example.json",
+		)
 	}
 	_ = fs.Parse(args)
 
@@ -257,15 +274,23 @@ func replayCommand(ctx context.Context, args []string) {
 
 Replay previously ingested ledger entries to selected sinks.
 
-Flags:
+By default, replay includes only replay-safe sinks. Use the advanced flags
+below to inspect or override that plan.
+
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas replay -config ./examples/config.example.json
-  oas replay -config ./examples/config.example.json -dry-run
-  oas replay -config ./examples/config.example.json -include-non-idempotent -sinks jsonl-local
-`)
+		printFlagSection(os.Stderr, fs, "Common flags",
+			usageFlag{Name: "config", Placeholder: "<path>"},
+		)
+		printFlagSection(os.Stderr, fs, "Advanced flags",
+			usageFlag{Name: "dry-run"},
+			usageFlag{Name: "sinks", Placeholder: "<id[,id]>"},
+			usageFlag{Name: "include-non-idempotent"},
+		)
+		printExamples(os.Stderr,
+			"oas replay -config ./examples/config.example.json",
+			"oas replay -config ./examples/config.example.json -dry-run",
+			"oas replay -config ./examples/config.example.json -include-non-idempotent -sinks jsonl-local",
+		)
 	}
 	_ = fs.Parse(args)
 
@@ -299,13 +324,14 @@ func exportCommand(ctx context.Context, args []string) {
 
 Export a deterministic JSONL snapshot from the ledger.
 
-Flags:
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas export -config ./examples/config.example.json -output ./exports/events.jsonl
-`)
+		printFlagSection(os.Stderr, fs, "Common flags",
+			usageFlag{Name: "config", Placeholder: "<path>"},
+			usageFlag{Name: "output", Placeholder: "<path|->"},
+		)
+		printExamples(os.Stderr,
+			"oas export -config ./examples/config.example.json -output ./exports/events.jsonl",
+		)
 	}
 	_ = fs.Parse(args)
 
@@ -332,14 +358,17 @@ func doctorCommand(ctx context.Context, args []string) {
 
 Run operational checks and print a readable table by default.
 
-Flags:
 `)
-		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, `
-Examples:
-  oas doctor -config ./examples/config.example.json
-  oas doctor -config ./examples/config.example.json -json
-`)
+		printFlagSection(os.Stderr, fs, "Common flags",
+			usageFlag{Name: "config", Placeholder: "<path>"},
+		)
+		printFlagSection(os.Stderr, fs, "Advanced flags",
+			usageFlag{Name: "json"},
+		)
+		printExamples(os.Stderr,
+			"oas doctor -config ./examples/config.example.json",
+			"oas doctor -config ./examples/config.example.json -json",
+		)
 	}
 	_ = fs.Parse(args)
 
@@ -362,7 +391,7 @@ Examples:
 }
 
 func validateCommand(args []string) {
-	configValidateCommand(args)
+	configValidateCommandWithName(args, "validate")
 }
 
 func mustRuntime(configPath string) *supervisor.Runtime {
@@ -404,6 +433,13 @@ Use:
   oas <command> --help
   oas daemon --help
   oas config --help
+
+Common starts:
+  oas config init -output ./oas.json
+  oas run -config ./oas.json
+  oas daemon start -config ./oas.json
+  oas export -config ./oas.json -output ./exports/events.jsonl
+  oas summary -input ./exports/events.jsonl
 `)
 }
 
@@ -418,9 +454,14 @@ Subcommands:
   restart   Restart a detached daemon
 
 Examples:
+  oas daemon run -config ./examples/config.example.json
   oas daemon start -config ./examples/config.example.json
   oas daemon status -config ./examples/config.example.json
+  oas daemon restart -config ./examples/config.example.json
   oas daemon stop -config ./examples/config.example.json
+
+Use:
+  oas daemon <subcommand> --help
 `)
 }
 
@@ -436,7 +477,65 @@ Examples:
   oas config init
   oas config print -config ./examples/config.example.json
   oas config validate -config ./examples/config.example.json
+
+Use:
+  oas config <subcommand> --help
 `)
+}
+
+type usageFlag struct {
+	Name        string
+	Placeholder string
+}
+
+func printFlagSection(writer io.Writer, fs *flag.FlagSet, title string, flags ...usageFlag) {
+	rows := make([][2]string, 0, len(flags))
+	width := 0
+	for _, spec := range flags {
+		flagInfo := fs.Lookup(spec.Name)
+		if flagInfo == nil {
+			continue
+		}
+		label := "-" + flagInfo.Name
+		if spec.Placeholder != "" {
+			label += " " + spec.Placeholder
+		}
+		detail := flagInfo.Usage + helpDefaultSuffix(flagInfo.DefValue)
+		rows = append(rows, [2]string{label, detail})
+		if len(label) > width {
+			width = len(label)
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Fprintf(writer, "%s:\n", title)
+	for _, row := range rows {
+		fmt.Fprintf(writer, "  %-*s  %s\n", width, row[0], row[1])
+	}
+	fmt.Fprintln(writer)
+}
+
+func printExamples(writer io.Writer, examples ...string) {
+	if len(examples) == 0 {
+		return
+	}
+	fmt.Fprintln(writer, "Examples:")
+	for _, example := range examples {
+		fmt.Fprintf(writer, "  %s\n", example)
+	}
+}
+
+func helpDefaultSuffix(value string) string {
+	switch value {
+	case "", "false":
+		return ""
+	default:
+		if strings.ContainsAny(value, " \t") {
+			return fmt.Sprintf(" (default %q)", value)
+		}
+		return fmt.Sprintf(" (default %s)", value)
+	}
 }
 
 func fatal(err error) {
