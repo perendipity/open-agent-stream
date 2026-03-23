@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,7 @@ type daemonStorageStatus struct {
 	Configured        bool                   `json:"configured"`
 	UsageBytes        int64                  `json:"usage_bytes"`
 	FreeBytes         uint64                 `json:"free_bytes,omitempty"`
+	ManagedPathCount  int                    `json:"managed_path_count,omitempty"`
 	ManagedPaths      []string               `json:"managed_paths,omitempty"`
 	MaxStorageBytes   int64                  `json:"max_storage_bytes,omitempty"`
 	PruneTargetBytes  int64                  `json:"prune_target_bytes,omitempty"`
@@ -60,6 +62,33 @@ type daemonStorageActivity struct {
 	PrunedRecords   int64  `json:"pruned_records,omitempty"`
 	SafePruneOffset int64  `json:"safe_prune_offset,omitempty"`
 	Raw             string `json:"raw,omitempty"`
+}
+
+type daemonStatusView struct {
+	State        string               `json:"state"`
+	Running      bool                 `json:"running"`
+	StalePID     bool                 `json:"stale_pid,omitempty"`
+	PID          int                  `json:"pid,omitempty"`
+	StartedAt    string               `json:"started_at,omitempty"`
+	Runtime      daemonRuntimeStatus  `json:"runtime"`
+	Paths        daemonResolvedPaths  `json:"paths"`
+	Storage      *daemonStorageStatus `json:"storage,omitempty"`
+	StorageError string               `json:"storage_error,omitempty"`
+}
+
+type daemonRuntimeStatus struct {
+	ConfigPath           string `json:"config_path,omitempty"`
+	PollInterval         string `json:"poll_interval,omitempty"`
+	ErrorBackoff         string `json:"error_backoff,omitempty"`
+	MaxConsecutiveErrors int    `json:"max_consecutive_errors,omitempty"`
+}
+
+type daemonResolvedPaths struct {
+	StatePath  string `json:"state_path"`
+	LedgerPath string `json:"ledger_path"`
+	PIDPath    string `json:"pid_path"`
+	LogPath    string `json:"log_path"`
+	MetaPath   string `json:"meta_path"`
 }
 
 func daemonStartCommand(args []string) {
@@ -121,7 +150,7 @@ func daemonStatusCommand(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas daemon status -config <path> [flags]
 
-Show daemon status, storage visibility, and resolved control-file paths.
+Show daemon/runtime status, resolved paths, and storage activity.
 
 `)
 		printFlagSection(os.Stderr, fs, "Common flags",
@@ -139,7 +168,11 @@ Show daemon status, storage visibility, and resolved control-file paths.
 	if strings.TrimSpace(*configPath) == "" {
 		fatal(errors.New("config path is required"))
 	}
-	cfg, err := config.Load(*configPath)
+	absConfigPath, err := filepath.Abs(*configPath)
+	if err != nil {
+		fatal(err)
+	}
+	cfg, err := config.Load(absConfigPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -147,88 +180,15 @@ Show daemon status, storage visibility, and resolved control-file paths.
 	metadata, _ := readDaemonMetadata(paths.metaPath)
 	pid, running := readPID(paths.pidPath, metadata)
 	storageStatus, storageErr := daemonStorageStatusFor(cfg, paths.logPath)
-
-	payload := map[string]any{
-		"running":                running,
-		"pid":                    pid,
-		"started_at":             metadata.StartedAt,
-		"config_path":            metadata.ConfigPath,
-		"log_path":               paths.logPath,
-		"pid_path":               paths.pidPath,
-		"meta_path":              paths.metaPath,
-		"poll_interval":          metadata.PollInterval,
-		"error_backoff":          metadata.ErrorBackoff,
-		"max_consecutive_errors": metadata.MaxConsecutiveErrors,
-	}
-	if storageErr != nil {
-		payload["storage_error"] = storageErr.Error()
-	} else {
-		payload["storage"] = storageStatus
-	}
+	view := buildDaemonStatusView(absConfigPath, cfg, metadata, paths, pid, running, storageStatus, storageErr)
 	if *asJSON {
-		if err := writeJSON(os.Stdout, payload); err != nil {
+		if err := writeJSON(os.Stdout, view); err != nil {
 			fatal(err)
 		}
 		return
 	}
-
-	switch {
-	case running:
-		fmt.Printf("Daemon running (pid=%d)\n", pid)
-	case pid > 0:
-		fmt.Printf("Daemon not running (stale pid=%d)\n", pid)
-	default:
-		fmt.Println("Daemon not running.")
-	}
-	if metadata.StartedAt != "" {
-		fmt.Printf("Started: %s\n", metadata.StartedAt)
-	}
-	if metadata.ConfigPath != "" {
-		fmt.Printf("Config: %s\n", metadata.ConfigPath)
-	}
-	fmt.Printf("PID file: %s\n", paths.pidPath)
-	fmt.Printf("Log file: %s\n", paths.logPath)
-	if metadata.PollInterval != "" {
-		fmt.Printf("Poll interval: %s\n", metadata.PollInterval)
-	}
-	if metadata.ErrorBackoff != "" {
-		fmt.Printf("Error backoff: %s\n", metadata.ErrorBackoff)
-	}
-	if metadata.MaxConsecutiveErrors > 0 {
-		fmt.Printf("Max consecutive errors: %d\n", metadata.MaxConsecutiveErrors)
-	}
-	if storageErr != nil {
-		fmt.Printf("Storage: error: %v\n", storageErr)
-		return
-	}
-	fmt.Println("Storage:")
-	fmt.Printf("  Usage bytes: %d\n", storageStatus.UsageBytes)
-	fmt.Printf("  Managed paths: %d\n", len(storageStatus.ManagedPaths))
-	if storageStatus.MaxStorageBytes > 0 {
-		fmt.Printf("  Max storage bytes: %d\n", storageStatus.MaxStorageBytes)
-	}
-	if storageStatus.DesiredUsageBytes > 0 {
-		fmt.Printf("  Desired usage bytes: %d\n", storageStatus.DesiredUsageBytes)
-	}
-	if storageStatus.FreeBytes > 0 {
-		fmt.Printf("  Free bytes: %d\n", storageStatus.FreeBytes)
-	}
-	if storageStatus.MinFreeBytes > 0 {
-		fmt.Printf("  Min free bytes: %d\n", storageStatus.MinFreeBytes)
-	}
-	if storageStatus.NeedsEnforcement {
-		fmt.Printf("  Needs enforcement: yes (%s)\n", storageStatus.Reason)
-	} else {
-		fmt.Println("  Needs enforcement: no")
-	}
-	if storageStatus.LastActivity != nil {
-		fmt.Printf("  Last storage event: %s at %s\n", storageStatus.LastActivity.Outcome, storageStatus.LastActivity.Timestamp)
-		if storageStatus.LastActivity.PrunedRecords > 0 {
-			fmt.Printf("  Last pruned records: %d\n", storageStatus.LastActivity.PrunedRecords)
-		}
-		if storageStatus.LastActivity.Reason != "" {
-			fmt.Printf("  Last event detail: %s\n", storageStatus.LastActivity.Reason)
-		}
+	if err := writeDaemonStatusReport(os.Stdout, view); err != nil {
+		fatal(err)
 	}
 }
 
@@ -515,7 +475,7 @@ func daemonStorageStatusFor(cfg config.Config, logPath string) (daemonStorageSta
 		Configured:        report.MaxStorageBytes > 0 || report.MinFreeBytes > 0 || report.PruneTargetBytes > 0,
 		UsageBytes:        report.UsageBytes,
 		FreeBytes:         report.FreeBytes,
-		ManagedPaths:      append([]string(nil), report.ManagedPaths...),
+		ManagedPathCount:  len(report.ManagedPaths),
 		MaxStorageBytes:   report.MaxStorageBytes,
 		PruneTargetBytes:  report.PruneTargetBytes,
 		DesiredUsageBytes: report.DesiredUsageBytes,
@@ -523,12 +483,156 @@ func daemonStorageStatusFor(cfg config.Config, logPath string) (daemonStorageSta
 		NeedsEnforcement:  report.NeedsEnforcement,
 		Reason:            report.Reason,
 	}
+	for _, managedPath := range report.ManagedPaths {
+		status.ManagedPaths = append(status.ManagedPaths, absolutePathOrValue(managedPath))
+	}
 	activity, err := readLastStorageActivity(logPath)
 	if err != nil {
 		return status, err
 	}
 	status.LastActivity = activity
 	return status, nil
+}
+
+func buildDaemonStatusView(configPath string, cfg config.Config, metadata daemonMetadata, paths daemonPaths, pid int, running bool, storageStatus daemonStorageStatus, storageErr error) daemonStatusView {
+	view := daemonStatusView{
+		State:     daemonProcessState(pid, running),
+		Running:   running,
+		StalePID:  pid > 0 && !running,
+		PID:       pid,
+		StartedAt: metadata.StartedAt,
+		Runtime: daemonRuntimeStatus{
+			ConfigPath:           firstNonEmpty(metadata.ConfigPath, configPath),
+			PollInterval:         firstNonEmpty(metadata.PollInterval, cfg.PollInterval),
+			ErrorBackoff:         firstNonEmpty(metadata.ErrorBackoff, cfg.ErrorBackoff),
+			MaxConsecutiveErrors: firstNonZero(metadata.MaxConsecutiveErrors, cfg.MaxConsecutiveErrors),
+		},
+		Paths: daemonResolvedPaths{
+			StatePath:  absolutePathOrValue(cfg.StatePath),
+			LedgerPath: absolutePathOrValue(cfg.LedgerPath),
+			PIDPath:    absolutePathOrValue(paths.pidPath),
+			LogPath:    absolutePathOrValue(paths.logPath),
+			MetaPath:   absolutePathOrValue(paths.metaPath),
+		},
+	}
+	if storageErr != nil {
+		view.StorageError = storageErr.Error()
+	} else {
+		copy := storageStatus
+		view.Storage = &copy
+	}
+	return view
+}
+
+func writeDaemonStatusReport(writer io.Writer, view daemonStatusView) error {
+	var b strings.Builder
+	appendKeyValueSection(&b, "Daemon",
+		[2]string{"State", view.State},
+		[2]string{"PID", intString(view.PID)},
+		[2]string{"Started", view.StartedAt},
+		[2]string{"Config", view.Runtime.ConfigPath},
+	)
+	appendKeyValueSection(&b, "Runtime",
+		[2]string{"Poll interval", view.Runtime.PollInterval},
+		[2]string{"Error backoff", view.Runtime.ErrorBackoff},
+		[2]string{"Max consecutive errors", intString(view.Runtime.MaxConsecutiveErrors)},
+	)
+	appendKeyValueSection(&b, "Paths",
+		[2]string{"State DB", view.Paths.StatePath},
+		[2]string{"Ledger DB", view.Paths.LedgerPath},
+		[2]string{"PID file", view.Paths.PIDPath},
+		[2]string{"Log file", view.Paths.LogPath},
+		[2]string{"Metadata file", view.Paths.MetaPath},
+	)
+	if view.StorageError != "" {
+		appendKeyValueSection(&b, "Storage",
+			[2]string{"Error", view.StorageError},
+		)
+	} else if view.Storage != nil {
+		appendKeyValueSection(&b, "Storage",
+			[2]string{"Configured", yesNo(view.Storage.Configured)},
+			[2]string{"Usage bytes", int64String(view.Storage.UsageBytes)},
+			[2]string{"Managed path count", intString(view.Storage.ManagedPathCount)},
+			[2]string{"Max storage bytes", int64String(view.Storage.MaxStorageBytes)},
+			[2]string{"Prune target bytes", int64String(view.Storage.PruneTargetBytes)},
+			[2]string{"Desired usage bytes", int64String(view.Storage.DesiredUsageBytes)},
+			[2]string{"Free bytes", uint64String(view.Storage.FreeBytes)},
+			[2]string{"Min free bytes", int64String(view.Storage.MinFreeBytes)},
+			[2]string{"Needs enforcement", needsEnforcementText(view.Storage)},
+		)
+		if view.Storage.LastActivity != nil {
+			appendKeyValueSection(&b, "Storage activity",
+				[2]string{"Outcome", view.Storage.LastActivity.Outcome},
+				[2]string{"Timestamp", view.Storage.LastActivity.Timestamp},
+				[2]string{"Reason", view.Storage.LastActivity.Reason},
+				[2]string{"Usage bytes", int64String(view.Storage.LastActivity.UsageBytes)},
+				[2]string{"Free bytes", uint64String(view.Storage.LastActivity.FreeBytes)},
+				[2]string{"Pruned records", int64String(view.Storage.LastActivity.PrunedRecords)},
+				[2]string{"Safe prune offset", int64String(view.Storage.LastActivity.SafePruneOffset)},
+			)
+		}
+	}
+	_, err := io.WriteString(writer, strings.TrimRight(b.String(), "\n")+"\n")
+	return err
+}
+
+func daemonProcessState(pid int, running bool) string {
+	switch {
+	case running:
+		return "running"
+	case pid > 0:
+		return "stale"
+	default:
+		return "stopped"
+	}
+}
+
+func needsEnforcementText(status *daemonStorageStatus) string {
+	if status == nil {
+		return ""
+	}
+	if status.NeedsEnforcement {
+		if status.Reason != "" {
+			return "yes (" + status.Reason + ")"
+		}
+		return "yes"
+	}
+	return "no"
+}
+
+func firstNonZero(primary, fallback int) int {
+	if primary != 0 {
+		return primary
+	}
+	return fallback
+}
+
+func intString(value int) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.Itoa(value)
+}
+
+func int64String(value int64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatInt(value, 10)
+}
+
+func uint64String(value uint64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatUint(value, 10)
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func readLastStorageActivity(logPath string) (*daemonStorageActivity, error) {

@@ -153,8 +153,9 @@ go run ./cmd/oas daemon status -config ./oas.json -json
 go run ./cmd/oas daemon stop -config ./oas.json
 ```
 
-`oas daemon status` now surfaces current storage usage, configured limits, and
-the most recent storage-guard event it can recover from the daemon log.
+`oas daemon status` now surfaces current storage usage, configured limits, the
+most recent storage-guard event it can recover from the daemon log, and a more
+structured JSON view of runtime settings and resolved paths for automation.
 
 ### 7. Run operational checks
 
