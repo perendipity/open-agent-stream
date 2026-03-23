@@ -26,9 +26,15 @@ type commandEventRecord struct {
 	Sequence       int
 	Timestamp      time.Time
 	Kind           string
+	CallID         string
 	Command        string
 	ExitCode       *int
 	DurationMillis *int
+}
+
+type pendingCommandStart struct {
+	record  commandEventRecord
+	matched bool
 }
 
 type inspectedCommand struct {
@@ -344,6 +350,7 @@ func inspectionCommandEvent(event schema.CanonicalEvent, commandContext string) 
 		Sequence:  event.Sequence,
 		Timestamp: event.Timestamp,
 		Kind:      event.Kind,
+		CallID:    payloadCallID(event.Payload),
 		Command:   command,
 	}
 	if ok {
@@ -359,29 +366,57 @@ func collapseCommands(events []commandEventRecord) []inspectedCommand {
 	if len(events) == 0 {
 		return nil
 	}
-	out := make([]inspectedCommand, 0, len(events))
-	for idx := 0; idx < len(events); idx++ {
-		current := events[idx]
-		if idx+1 < len(events) && canCollapseCommandPair(current, events[idx+1]) {
-			next := events[idx+1]
-			row := inspectedCommand{
-				Sequence:        current.Sequence,
-				Status:          "completed",
-				Command:         firstNonEmpty(current.Command, next.Command),
-				ExitCode:        next.ExitCode,
-				StartSequence:   intPtr(current.Sequence),
-				StartTimestamp:  timePtr(current.Timestamp),
-				FinishSequence:  intPtr(next.Sequence),
-				FinishTimestamp: timePtr(next.Timestamp),
-				DurationMillis:  durationMillisForPair(current, next),
+	pendingStarts := make([]pendingCommandStart, 0, len(events))
+	pendingByCallID := map[string][]int{}
+	pendingByCommand := map[string][]int{}
+	rows := make([]inspectedCommand, 0, len(events))
+
+	for _, event := range events {
+		switch event.Kind {
+		case "command.started":
+			index := len(pendingStarts)
+			pendingStarts = append(pendingStarts, pendingCommandStart{record: event})
+			if callID := strings.TrimSpace(event.CallID); callID != "" {
+				pendingByCallID[callID] = append(pendingByCallID[callID], index)
 			}
-			out = append(out, row)
-			idx++
+			if commandKey := commandMatchKey(event.Command); commandKey != "" {
+				pendingByCommand[commandKey] = append(pendingByCommand[commandKey], index)
+			}
+		case "command.finished":
+			start, ok := matchPendingCommandStart(event, pendingStarts, pendingByCallID, pendingByCommand)
+			if !ok {
+				rows = append(rows, incompleteCommandRow(event))
+				continue
+			}
+			rows = append(rows, completedCommandRow(start, event))
+		default:
+			rows = append(rows, incompleteCommandRow(event))
+		}
+	}
+
+	for _, pending := range pendingStarts {
+		if pending.matched {
 			continue
 		}
-		out = append(out, incompleteCommandRow(current))
+		rows = append(rows, incompleteCommandRow(pending.record))
 	}
-	return out
+
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Sequence == rows[j].Sequence {
+			leftFinish := 0
+			if rows[i].FinishSequence != nil {
+				leftFinish = *rows[i].FinishSequence
+			}
+			rightFinish := 0
+			if rows[j].FinishSequence != nil {
+				rightFinish = *rows[j].FinishSequence
+			}
+			return leftFinish < rightFinish
+		}
+		return rows[i].Sequence < rows[j].Sequence
+	})
+
+	return rows
 }
 
 func filterCommands(commands []inspectedCommand, commandFilter string) []inspectedCommand {
@@ -429,9 +464,108 @@ func canCollapseCommandPair(start, finish commandEventRecord) bool {
 	if finish.Sequence <= start.Sequence {
 		return false
 	}
+	startCallID := strings.TrimSpace(start.CallID)
+	finishCallID := strings.TrimSpace(finish.CallID)
+	if startCallID != "" && finishCallID != "" {
+		return startCallID == finishCallID
+	}
 	startCommand := strings.TrimSpace(start.Command)
 	finishCommand := strings.TrimSpace(finish.Command)
 	return startCommand == "" || finishCommand == "" || startCommand == finishCommand
+}
+
+func commandMatchKey(command string) string {
+	return strings.TrimSpace(command)
+}
+
+func matchPendingCommandStart(
+	finish commandEventRecord,
+	pendingStarts []pendingCommandStart,
+	pendingByCallID map[string][]int,
+	pendingByCommand map[string][]int,
+) (commandEventRecord, bool) {
+	if callID := strings.TrimSpace(finish.CallID); callID != "" {
+		if index, ok := popPendingIndex(pendingByCallID, callID, pendingStarts); ok {
+			return claimPendingCommandStart(index, pendingStarts, pendingByCallID, pendingByCommand)
+		}
+	}
+	if commandKey := commandMatchKey(finish.Command); commandKey != "" {
+		if index, ok := popPendingIndex(pendingByCommand, commandKey, pendingStarts); ok {
+			return claimPendingCommandStart(index, pendingStarts, pendingByCallID, pendingByCommand)
+		}
+	}
+	return commandEventRecord{}, false
+}
+
+func popPendingIndex(indexes map[string][]int, key string, pendingStarts []pendingCommandStart) (int, bool) {
+	queue := indexes[key]
+	for len(queue) > 0 {
+		index := queue[0]
+		queue = queue[1:]
+		if index < 0 || index >= len(pendingStarts) || pendingStarts[index].matched {
+			continue
+		}
+		if len(queue) == 0 {
+			delete(indexes, key)
+		} else {
+			indexes[key] = queue
+		}
+		return index, true
+	}
+	delete(indexes, key)
+	return 0, false
+}
+
+func claimPendingCommandStart(
+	index int,
+	pendingStarts []pendingCommandStart,
+	pendingByCallID map[string][]int,
+	pendingByCommand map[string][]int,
+) (commandEventRecord, bool) {
+	if index < 0 || index >= len(pendingStarts) || pendingStarts[index].matched {
+		return commandEventRecord{}, false
+	}
+	pendingStarts[index].matched = true
+	record := pendingStarts[index].record
+	removePendingIndex(pendingByCallID, strings.TrimSpace(record.CallID), index)
+	removePendingIndex(pendingByCommand, commandMatchKey(record.Command), index)
+	return record, true
+}
+
+func removePendingIndex(indexes map[string][]int, key string, target int) {
+	if key == "" {
+		return
+	}
+	queue := indexes[key]
+	if len(queue) == 0 {
+		return
+	}
+	filtered := queue[:0]
+	for _, index := range queue {
+		if index == target {
+			continue
+		}
+		filtered = append(filtered, index)
+	}
+	if len(filtered) == 0 {
+		delete(indexes, key)
+		return
+	}
+	indexes[key] = filtered
+}
+
+func completedCommandRow(start, finish commandEventRecord) inspectedCommand {
+	return inspectedCommand{
+		Sequence:        start.Sequence,
+		Status:          "completed",
+		Command:         firstNonEmpty(start.Command, finish.Command),
+		ExitCode:        finish.ExitCode,
+		StartSequence:   intPtr(start.Sequence),
+		StartTimestamp:  timePtr(start.Timestamp),
+		FinishSequence:  intPtr(finish.Sequence),
+		FinishTimestamp: timePtr(finish.Timestamp),
+		DurationMillis:  durationMillisForPair(start, finish),
+	}
 }
 
 func incompleteCommandRow(event commandEventRecord) inspectedCommand {
