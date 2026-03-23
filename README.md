@@ -69,8 +69,9 @@ go run ./cmd/oas config print -config ./oas.json
 go run ./cmd/oas config validate -config ./oas.json
 ```
 
-- `oas config print` shows the effective config after defaults are applied,
-  including resolved daemon paths.
+- `oas config print` shows a readable effective-config summary by default,
+  including resolved state, ledger, daemon, and source-root paths.
+- add `-json` if you want structured output for automation.
 - `oas config validate` checks both the config and bundled fixtures before you
   run anything.
 

@@ -187,34 +187,38 @@ Write a starter config with documented defaults.
 func configPrintCommand(args []string) {
 	fs := flag.NewFlagSet("config print", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
+	jsonOutput := fs.Bool("json", false, "print structured JSON instead of a readable summary")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas config print -config <path>
 
-Print the effective config after defaults are applied.
+Print the effective config after defaults are applied, plus the resolved paths OAS will use.
 
 `)
 		printFlagSection(os.Stderr, fs, "Common flags", usageFlag{Name: "config", Placeholder: "<path>"})
+		printFlagSection(os.Stderr, fs, "Advanced flags", usageFlag{Name: "json"})
 		printExamples(os.Stderr,
 			"oas config print -config ./examples/config.example.json",
+			"oas config print -config ./examples/config.example.json -json",
 		)
 	}
 	_ = fs.Parse(args)
 
-	cfg, err := config.Load(*configPath)
+	absConfigPath, err := filepath.Abs(*configPath)
 	if err != nil {
 		fatal(err)
 	}
-	paths := daemonPathsFor(cfg)
-	payload := map[string]any{
-		"config": cfg,
-		"resolved": map[string]any{
-			"daemon_pid_path":  paths.pidPath,
-			"daemon_log_path":  paths.logPath,
-			"daemon_meta_path": paths.metaPath,
-			"default_data_dir": config.DefaultDataDir(),
-		},
+	cfg, err := config.Load(absConfigPath)
+	if err != nil {
+		fatal(err)
 	}
-	if err := writeJSON(os.Stdout, payload); err != nil {
+	view := buildConfigInspectView(absConfigPath, cfg)
+	if *jsonOutput {
+		if err := writeJSON(os.Stdout, view); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	if err := writeConfigInspectReport(os.Stdout, view); err != nil {
 		fatal(err)
 	}
 }
@@ -421,7 +425,7 @@ Usage:
 Core commands:
   run       Run one ingestion/normalization/delivery cycle
   daemon    Manage continuous daemon mode
-  config    Initialize, print, or validate config
+  config    Initialize, inspect, or validate config
   replay    Replay ledger entries to sinks
   export    Export canonical events as JSONL
   summary   Summarize canonical events by session
@@ -470,7 +474,7 @@ func configUsage() {
 
 Subcommands:
   init      Write a starter config
-  print     Print the effective config after defaults
+  print     Print the effective config and resolved paths
   validate  Validate config and fixtures
 
 Examples:
