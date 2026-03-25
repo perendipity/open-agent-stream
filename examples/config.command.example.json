@@ -1,0 +1,69 @@
+{
+  "version": "0.1",
+  "machine_id": "example-command",
+  "state_path": ".open-agent-stream/state.db",
+  "ledger_path": ".open-agent-stream/ledger.db",
+  "max_storage_bytes": 104857600,
+  "prune_target_bytes": 83886080,
+  "min_free_bytes": 52428800,
+  "batch_size": 64,
+  "poll_interval": "3s",
+  "error_backoff": "10s",
+  "max_consecutive_errors": 10,
+  "sources": [
+    {
+      "instance_id": "codex-local",
+      "type": "codex_local",
+      "root": "./fixtures/sources/codex"
+    },
+    {
+      "instance_id": "claude-local",
+      "type": "claude_local",
+      "root": "./fixtures/sources/claude"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "remote-rsync",
+      "type": "command",
+      "settings": {
+        "argv": [
+          "rsync",
+          "-az",
+          "{payload_path}",
+          "collector@example:/var/lib/oas/inbox/"
+        ],
+        "format": "canonical_jsonl.gz",
+        "staging_dir": "/var/tmp/oas-command",
+        "timeout": "30s",
+        "max_output_bytes": 4096
+      },
+      "delivery": {
+        "max_batch_events": 500,
+        "max_batch_age": "30s",
+        "window_every": "5m",
+        "retry_initial_backoff": "10s",
+        "retry_max_backoff": "5m",
+        "poison_after_failures": 5
+      }
+    }
+  ],
+  "privacy": {
+    "default": {
+      "drop_raw": false,
+      "redact_keys": ["api_key", "token", "secret"],
+      "regexes": [
+        {
+          "pattern": "Bearer\\s+[A-Za-z0-9._-]+",
+          "replacement": "Bearer [REDACTED]"
+        }
+      ]
+    },
+    "per_sink": {
+      "remote-rsync": {
+        "drop_raw": false,
+        "redact_keys": ["api_key", "token", "secret"]
+      }
+    }
+  }
+}

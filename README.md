@@ -83,7 +83,8 @@ oas config init -output ./oas.json
 
 This creates a starter config with current defaults, fixture-backed Codex and
 Claude sources for a local demo, and a `stdout` sink. If you want a fuller
-reference config, see [`examples/config.example.json`](examples/config.example.json).
+reference config, see [`examples/config.example.json`](examples/config.example.json)
+and the examples index in [`examples/README.md`](examples/README.md).
 That reference config includes a placeholder remote `http` sink using the
 current `settings` and `delivery` blocks, so treat it as a shape reference and
 edit the destination before you run it against a real endpoint.

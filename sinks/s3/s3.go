@@ -21,13 +21,17 @@ import (
 
 type Sink struct {
 	cfg          sinkapi.Config
-	client       *s3.Client
+	client       putObjectClient
 	bucket       string
 	prefix       string
 	keyTemplate  string
 	format       string
 	storageClass string
 	sse          string
+}
+
+type putObjectClient interface {
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 }
 
 func New(cfg sinkapi.Config) *Sink {
@@ -54,11 +58,13 @@ func (s *Sink) Init(ctx context.Context) error {
 	s.storageClass = sinkutil.String(s.cfg, "storage_class")
 	s.sse = sinkutil.String(s.cfg, "server_side_encryption")
 	region := sinkutil.String(s.cfg, "region")
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
-	if err != nil {
-		return err
+	if s.client == nil {
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+		if err != nil {
+			return err
+		}
+		s.client = s3.NewFromConfig(awsCfg)
 	}
-	s.client = s3.NewFromConfig(awsCfg)
 	return nil
 }
 

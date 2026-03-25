@@ -240,6 +240,27 @@ That lets you confirm batch sealing and file staging before you swap back to
 - `terminal_contiguous_offset` moving forward even if a batch is terminally
   quarantined and retained locally for inspection
 
+## Understanding acked versus terminal progress
+
+The two delivery watermarks mean different things:
+
+- `acked_contiguous_offset`: the highest contiguous ledger offset that the sink
+  has successfully acknowledged to the destination
+- `terminal_contiguous_offset`: the highest contiguous ledger offset that is no
+  longer blocking local retention, including successful sends, empty-after-redaction
+  skips, and terminally quarantined batches
+
+If both numbers move together, delivery is healthy and retention can prune
+normally.
+
+If `terminal_contiguous_offset` is ahead of `acked_contiguous_offset`, OAS has
+quarantined one or more batches after a permanent failure or poison-batch
+threshold. That prevents local retention from stalling forever, but it also
+means the destination never acknowledged some ledger range.
+
+`gaps` tells you how many ledger ranges are currently missing from the success
+watermark. In a steady healthy state, `gaps` should be `0`.
+
 `oas doctor` also surfaces sink-specific readiness hints such as the configured
 HTTP URL or the command executable path.
 
