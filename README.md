@@ -304,13 +304,14 @@ Notes:
 - `sqlite` is replay-safe by default because it converges by `event_id`.
 - `jsonl` is an append-only delivery sink, so replay will duplicate lines if you explicitly include it.
 - `s3` is also append-only by default; use deterministic keys and expect replay to stay disabled unless you explicitly opt in.
-- `http`, `command`, and `webhook` are side-effecting delivery sinks and are skipped by default during replay.
+- `http`, `command`, `external`, and `webhook` are side-effecting delivery sinks and are skipped by default during replay.
 - `export` is the deterministic way to produce a JSONL snapshot from the ledger for review or downstream tooling.
 - `max_storage_bytes` lets the daemon enforce a storage budget for its managed files.
   When usage exceeds the budget, OAS prunes safely delivered ledger rows, compacts the
   SQLite stores, and exits loudly if it still cannot get back under the configured limit.
 - Before handing OAS to an early adopter, read [`docs/adoption/early-adopters.md`](docs/adoption/early-adopters.md) for current guardrails and evaluation expectations.
 - For remote sink setup and validation, read [`docs/adoption/remote-destinations.md`](docs/adoption/remote-destinations.md).
+- For multi-machine rollout and service management, read [`docs/adoption/multi-machine.md`](docs/adoption/multi-machine.md).
 
 ## Extending OAS
 
@@ -319,13 +320,16 @@ If you want to build a third-party adapter or sink, start with:
 - [`docs/integrations/README.md`](docs/integrations/README.md)
 - [`docs/governance/compatibility-matrix.md`](docs/governance/compatibility-matrix.md)
 
-Today the public contracts are ready for authoring against `/pkg`, but the
-stock CLI still wires only the built-in types. In practice, that means:
+Today the public contracts are ready for authoring against `/pkg`, and the
+stock CLI supports built-in sinks plus out-of-process `external` sinks. In
+practice, that means:
 
-- upstream an adapter or sink here if you want it available in the stock `oas`
-  CLI, or
-- maintain a small custom CLI overlay if you want to move faster against the
-  published contracts before plugin loading exists in the stock runtime
+- upstream an adapter or built-in sink here if you want it available in the
+  stock `oas` CLI for everyone,
+- ship an external sink executable if you want a proprietary or unbundled
+  destination without forking the runtime, or
+- maintain a custom CLI overlay when you need a custom source adapter or a
+  deeper runtime change than the published sink/runtime contracts cover
 
 See [`docs/integrations/README.md`](docs/integrations/README.md) and
 [`rfcs/0002-external-plugin-runtime.md`](rfcs/0002-external-plugin-runtime.md)

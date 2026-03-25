@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
+	"github.com/open-agent-stream/open-agent-stream/internal/eventspec"
 	"github.com/open-agent-stream/open-agent-stream/internal/redact"
 	"github.com/open-agent-stream/open-agent-stream/internal/state"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
@@ -119,9 +120,14 @@ func (m *Manager) Init() error {
 }
 
 func (m *Manager) PrepareBatch(ctx context.Context, batch sinkapi.Batch, ledgerOffset int64) error {
+	_ = ctx
 	now := time.Now().UTC()
 	for _, entry := range m.sinks {
-		filtered, _, err := m.redactor.Apply(entry.cfg.ID, batch)
+		versioned, err := eventspec.Batch(batch, config.EffectiveSinkEventSpecVersion(entry.cfg.EventSpecVersion))
+		if err != nil {
+			return err
+		}
+		filtered, _, err := m.redactor.Apply(entry.cfg.ID, versioned)
 		if err != nil {
 			return err
 		}

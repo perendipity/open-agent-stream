@@ -115,9 +115,10 @@ func writeConfigInspectReport(writer io.Writer, view configInspectView) error {
 	if len(view.Config.Sinks) > 0 {
 		b.WriteString("Sinks:\n")
 		for _, sink := range view.Config.Sinks {
-			fmt.Fprintf(&b, "  - %s (%s): max_batch_events=%d max_batch_age=%s window_every=%s retry_initial=%s retry_max=%s poison_after=%d\n",
+			fmt.Fprintf(&b, "  - %s (%s): event_spec=%s max_batch_events=%d max_batch_age=%s window_every=%s retry_initial=%s retry_max=%s poison_after=%d\n",
 				sink.ID,
 				sink.Type,
+				config.EffectiveSinkEventSpecVersion(sink.EventSpecVersion),
 				sink.Delivery.MaxBatchEvents,
 				emptyConfigValue(sink.Delivery.MaxBatchAge),
 				emptyConfigValue(sink.Delivery.WindowEvery),

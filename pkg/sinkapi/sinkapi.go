@@ -7,11 +7,12 @@ import (
 )
 
 type Config struct {
-	ID       string            `json:"id"`
-	Type     string            `json:"type"`
-	Options  map[string]string `json:"options,omitempty"`
-	Settings map[string]any    `json:"settings,omitempty"`
-	Delivery DeliveryConfig    `json:"delivery,omitempty"`
+	ID               string            `json:"id"`
+	Type             string            `json:"type"`
+	EventSpecVersion string            `json:"event_spec_version,omitempty"`
+	Options          map[string]string `json:"options,omitempty"`
+	Settings         map[string]any    `json:"settings,omitempty"`
+	Delivery         DeliveryConfig    `json:"delivery,omitempty"`
 }
 
 type DeliveryConfig struct {

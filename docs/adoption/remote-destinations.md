@@ -8,6 +8,8 @@ The stock runtime includes these built-in remote-capable sinks:
 - `command`: stage a sealed payload file and invoke your own transport such as
   `rsync`, `scp`, or a wrapper script
 - `s3`: upload sealed batch objects to a bucket with a deterministic object key
+- `external`: hand the sealed batch to an out-of-process sink executable over a
+  versioned stdio protocol
 - `webhook`: compatibility alias to `http`
 
 ## Config model
@@ -29,6 +31,8 @@ Practical implications:
   than hard-coding them into the config
 - use deterministic S3 keys so retries reuse the same object key
 - expect `http`, `command`, and `webhook` replay to stay disabled by default
+- expect `external` replay to stay disabled by default because the plugin may
+  trigger side effects
 - expect `s3` replay to stay disabled by default because it is append-only
 
 ## Choose the right sink
@@ -52,6 +56,12 @@ Use `s3` when:
 - you want append-only archival or downstream fan-out from a bucket
 - you want sealed batch objects in `canonical_jsonl.gz`
 - you can provide a deterministic key template
+
+Use `external` when:
+
+- you need a proprietary or unbundled destination without forking the stock CLI
+- you want OAS to keep ownership of batching, retry, and quarantine
+- your destination is better implemented as a standalone executable than as an HTTP wrapper
 
 ## HTTP example
 
@@ -165,6 +175,33 @@ directly.
 That keeps retries on the same object key instead of creating accidental
 duplicates.
 
+## External sink example
+
+```json
+{
+  "id": "vendor-plugin",
+  "type": "external",
+  "event_spec_version": "v2",
+  "settings": {
+    "plugin_type": "vendor-api",
+    "argv": ["/usr/local/bin/oas-vendor-plugin"],
+    "format": "canonical_jsonl.gz",
+    "timeout": "30s",
+    "max_output_bytes": 4096
+  },
+  "delivery": {
+    "max_batch_events": 100,
+    "max_batch_age": "5s",
+    "retry_initial_backoff": "5s",
+    "retry_max_backoff": "1m",
+    "poison_after_failures": 5
+  }
+}
+```
+
+The external executable receives `handshake`, `health`, and `send` requests over
+stdin/stdout. See [`spec/sink-runtime/v1`](../../spec/sink-runtime/v1/README.md).
+
 ## Local validation before a real destination
 
 Validate the sink shape first:
@@ -257,6 +294,9 @@ If `terminal_contiguous_offset` is ahead of `acked_contiguous_offset`, OAS has
 quarantined one or more batches after a permanent failure or poison-batch
 threshold. That prevents local retention from stalling forever, but it also
 means the destination never acknowledged some ledger range.
+
+Use `oas delivery list`, `oas delivery inspect`, and `oas delivery retry` when
+you need to inspect or requeue those quarantined batches intentionally.
 
 `gaps` tells you how many ledger ranges are currently missing from the success
 watermark. In a steady healthy state, `gaps` should be `0`.

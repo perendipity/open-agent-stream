@@ -139,9 +139,31 @@ func (s *Sink) SendBatch(ctx context.Context, batch sinkapi.Batch) (sinkapi.Resu
 	return s.SendPrepared(ctx, prepared)
 }
 
-func (s *Sink) Flush(context.Context) error  { return nil }
-func (s *Sink) Health(context.Context) error { return nil }
-func (s *Sink) Close(context.Context) error  { return nil }
+func (s *Sink) Flush(context.Context) error { return nil }
+func (s *Sink) Health(context.Context) error {
+	argv := sinkutil.StringSlice(s.cfg, "argv")
+	if len(argv) == 0 {
+		return errors.New("command sink requires settings.argv")
+	}
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return err
+	}
+	stagingDir := firstNonEmpty(sinkutil.String(s.cfg, "staging_dir"), os.TempDir())
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(stagingDir, ".oas-healthcheck-*")
+	if err != nil {
+		return err
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return os.Remove(path)
+}
+func (s *Sink) Close(context.Context) error { return nil }
 
 type limitedBuffer struct {
 	max int64
@@ -232,6 +254,8 @@ func intFromMap(values map[string]any, key string, fallback int) int {
 		return int(typed)
 	case int:
 		return typed
+	case int64:
+		return int(typed)
 	default:
 		return fallback
 	}

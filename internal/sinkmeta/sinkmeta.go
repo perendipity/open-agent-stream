@@ -30,7 +30,7 @@ func ReplayClassForType(sinkType string) ReplayClass {
 		return ReplayClassIdempotent
 	case "jsonl", "stdout", "s3":
 		return ReplayClassAppendOnly
-	case "webhook", "http", "command":
+	case "webhook", "http", "command", "external":
 		return ReplayClassSideEffecting
 	default:
 		return ReplayClassSideEffecting

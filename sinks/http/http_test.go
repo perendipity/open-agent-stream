@@ -69,3 +69,43 @@ func TestSendPreparedClassifiesPermanentAndRetryableResponses(t *testing.T) {
 		})
 	}
 }
+
+func TestHealthFailsWhenBearerTokenEnvIsUnset(t *testing.T) {
+	t.Parallel()
+
+	sink := New(sinkapi.Config{
+		ID:   "remote",
+		Type: "http",
+		Settings: map[string]any{
+			"url":              "https://example.com/ingest",
+			"bearer_token_env": "OAS_MISSING_TOKEN",
+		},
+	})
+	if err := sink.Health(context.Background()); err == nil {
+		t.Fatal("expected missing bearer token env to fail health")
+	}
+}
+
+func TestHealthUsesOptionalProbeURL(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ready" {
+			t.Fatalf("probe path=%q, want /ready", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sink := New(sinkapi.Config{
+		ID:   "remote",
+		Type: "http",
+		Settings: map[string]any{
+			"url":       server.URL + "/ingest",
+			"probe_url": server.URL + "/ready",
+		},
+	})
+	if err := sink.Health(context.Background()); err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+}

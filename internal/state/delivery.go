@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
@@ -197,6 +198,76 @@ func (s *Store) ListDueDeliveryBatches(now time.Time, limit int) ([]DeliveryBatc
 	}
 	defer rows.Close()
 	return scanDeliveryBatches(rows)
+}
+
+func (s *Store) ListDeliveryBatches(sinkID string, statuses []string, limit int) ([]DeliveryBatch, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `SELECT batch_id, sink_id, prepared_json, payload_bytes, ledger_min_offset, ledger_max_offset, event_count,
+	        status, attempt_count, next_attempt_at, COALESCE(last_error, ''), created_at, updated_at
+	 FROM delivery_batches`
+	args := make([]any, 0, len(statuses)+2)
+	var clauses []string
+	if sinkID != "" {
+		clauses = append(clauses, "sink_id = ?")
+		args = append(args, sinkID)
+	}
+	if len(statuses) > 0 {
+		placeholders := make([]string, 0, len(statuses))
+		for _, status := range statuses {
+			placeholders = append(placeholders, "?")
+			args = append(args, status)
+		}
+		clauses = append(clauses, "status IN ("+strings.Join(placeholders, ", ")+")")
+	}
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY updated_at DESC, created_at DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDeliveryBatches(rows)
+}
+
+func (s *Store) GetDeliveryBatch(batchID string) (DeliveryBatch, error) {
+	return s.getDeliveryBatch(batchID)
+}
+
+func (s *Store) RetryDeliveryBatch(batchID string, updatedAt time.Time) error {
+	return withTx(s.db, func(tx *sql.Tx) error {
+		batch, err := getDeliveryBatchTx(tx, batchID)
+		if err != nil {
+			return err
+		}
+		if batch.Status != DeliveryBatchStatusQuarantined {
+			return fmt.Errorf("delivery batch %s is %s; only quarantined batches can be retried explicitly", batchID, batch.Status)
+		}
+		_, err = tx.Exec(
+			`UPDATE delivery_batches
+			 SET status = ?, next_attempt_at = ?, last_error = '', updated_at = ?
+			 WHERE batch_id = ?`,
+			DeliveryBatchStatusRetrying,
+			updatedAt.UTC().Format(time.RFC3339Nano),
+			updatedAt.UTC().Format(time.RFC3339Nano),
+			batchID,
+		)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(
+			`UPDATE sink_progress
+			 SET updated_at = ?
+			 WHERE sink_id = ?`,
+			updatedAt.UTC().Format(time.RFC3339Nano),
+			batch.SinkID,
+		)
+		return err
+	})
 }
 
 func (s *Store) MarkDeliveryBatchRetry(batchID, lastError string, nextAttemptAt, updatedAt time.Time) error {
@@ -539,6 +610,21 @@ func getDeliveryBatchTx(tx *sql.Tx, batchID string) (DeliveryBatch, error) {
 		 WHERE batch_id = ?`,
 		batchID,
 	)
+	return scanDeliveryBatchRow(row)
+}
+
+func (s *Store) getDeliveryBatch(batchID string) (DeliveryBatch, error) {
+	row := s.db.QueryRow(
+		`SELECT batch_id, sink_id, prepared_json, payload_bytes, ledger_min_offset, ledger_max_offset, event_count,
+		        status, attempt_count, next_attempt_at, COALESCE(last_error, ''), created_at, updated_at
+		 FROM delivery_batches
+		 WHERE batch_id = ?`,
+		batchID,
+	)
+	return scanDeliveryBatchRow(row)
+}
+
+func scanDeliveryBatchRow(row *sql.Row) (DeliveryBatch, error) {
 	var batch DeliveryBatch
 	var nextAttemptRaw, createdRaw, updatedRaw string
 	if err := row.Scan(

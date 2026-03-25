@@ -15,6 +15,7 @@ import (
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
 	"github.com/open-agent-stream/open-agent-stream/internal/supervisor"
+	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sinkapi"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
 )
@@ -38,6 +39,8 @@ func main() {
 		runCommand(ctx, os.Args[2:])
 	case "daemon":
 		daemonCommand(ctx, os.Args[2:])
+	case "delivery":
+		deliveryCommand(os.Args[2:])
 	case "config":
 		configCommand(os.Args[2:])
 	case "replay":
@@ -172,7 +175,7 @@ use, edit the generated source roots before you run OAS.
 
 	cfg := config.Config{
 		Version:              "0.1",
-		MachineID:            "local-dev",
+		MachineID:            config.GenerateMachineID(),
 		StatePath:            filepath.Join(config.DefaultDataDir(), "state.db"),
 		LedgerPath:           filepath.Join(config.DefaultDataDir(), "ledger.db"),
 		MaxStorageBytes:      100 * 1024 * 1024,
@@ -267,6 +270,9 @@ pass -root to a local checkout of this repo or skip fixture validation.
 	if !report.OK() {
 		fatalText(formatValidationFailure(report))
 	}
+	for _, warning := range report.ConfigWarnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
 	fmt.Println("config and fixtures validated")
 }
 
@@ -326,6 +332,7 @@ func exportCommand(ctx context.Context, args []string) {
 	fs := flag.NewFlagSet("export", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
 	outputPath := fs.String("output", "-", "output file path or - for stdout")
+	eventSpecVersion := fs.String("event-spec", "v1", "event spec version to export (v1 or v2)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas export -config <path> [flags]
 
@@ -336,8 +343,12 @@ Export a deterministic JSONL snapshot from the ledger.
 			usageFlag{Name: "config", Placeholder: "<path>"},
 			usageFlag{Name: "output", Placeholder: "<path|->"},
 		)
+		printFlagSection(os.Stderr, fs, "Advanced flags",
+			usageFlag{Name: "event-spec", Placeholder: "<v1|v2>"},
+		)
 		printExamples(os.Stderr,
 			"oas export -config ./examples/config.example.json -output ./exports/events.jsonl",
+			"oas export -config ./examples/config.example.json -event-spec v2 -output ./exports/events-v2.jsonl",
 		)
 	}
 	_ = fs.Parse(args)
@@ -351,7 +362,11 @@ Export a deterministic JSONL snapshot from the ledger.
 	}
 	defer writer.Close()
 
-	if err := runtime.Export(ctx, writer); err != nil {
+	if normalized := schema.NormalizeEventSpecVersion(*eventSpecVersion); normalized == "" {
+		fatal(fmt.Errorf("unsupported -event-spec value %q; expected v1 or v2", *eventSpecVersion))
+	}
+
+	if err := runtime.ExportWithOptions(ctx, writer, supervisor.ExportOptions{EventSpecVersion: *eventSpecVersion}); err != nil {
 		fatal(err)
 	}
 }
@@ -453,6 +468,7 @@ Core commands:
   version   Print the installed CLI version
   run       Run one ingestion/normalization/delivery cycle
   daemon    Manage continuous daemon mode
+  delivery  Inspect and retry sealed delivery batches
   config    Initialize, inspect, or validate config
   replay    Replay ledger entries to sinks
   export    Export canonical events as JSONL
@@ -465,6 +481,7 @@ Core commands:
 Use:
   oas <command> --help
   oas daemon --help
+  oas delivery --help
   oas config --help
   oas analytics --help
 
@@ -473,6 +490,7 @@ Common starts:
   oas config init -output ./oas.json
   oas run -config ./oas.json
   oas daemon start -config ./oas.json
+  oas delivery status -config ./oas.json
   oas export -config ./oas.json -output ./exports/events.jsonl
   oas analytics build -config ./oas.json
   oas summary -input ./exports/events.jsonl

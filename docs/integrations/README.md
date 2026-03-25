@@ -11,8 +11,10 @@ Today there are three realistic ways to extend OAS:
    cover your workflow.
 2. **Upstream a new adapter or sink here** if you want support in the stock
    `oas` CLI for everyone.
-3. **Maintain a custom CLI overlay** if you want to author against the public
-   contracts now without waiting for the stock runtime to load external plugins.
+3. **Ship an external sink executable** if you want a proprietary or unbundled
+   destination without forking the stock CLI.
+4. **Maintain a custom CLI overlay** if you need a custom source adapter or a
+   deeper runtime change than the external sink protocol supports.
 
 The important distinction is that the **contracts are ready before the runtime
 plugin boundary is finalized**.
@@ -25,9 +27,13 @@ Build against these published surfaces:
 - [`spec/sink/v1`](../../spec/sink/v1/README.md)
 - [`spec/raw-envelope/v1`](../../spec/raw-envelope/v1/README.md)
 - [`spec/canonical-event/v1`](../../spec/canonical-event/v1/README.md)
-- [`spec/session-model/v1`](../../spec/session-model/v1/README.md)
+- [`spec/canonical-event/v2/schema.json`](../../spec/canonical-event/v2/schema.json)
+- [`spec/session-model/v1`](../../spec/session-model/v1/schema.json)
+- [`spec/session-model/v2/schema.json`](../../spec/session-model/v2/schema.json)
 - [`spec/privacy-policy/v1`](../../spec/privacy-policy/v1/README.md)
+- [`spec/sink-runtime/v1`](../../spec/sink-runtime/v1/README.md)
 - [`pkg/sourceapi`](../../pkg/sourceapi/sourceapi.go)
+- [`pkg/externalapi`](../../pkg/externalapi/externalapi.go)
 - [`pkg/sinkapi`](../../pkg/sinkapi/sinkapi.go)
 - [`pkg/schema`](../../pkg/schema/schema.go)
 
@@ -152,9 +158,21 @@ into:
 - `settings` for destination-specific data
 - `delivery` for batching, fixed-window release, retry backoff, and poison-batch handling
 
-The public `sinkapi.Sink` contract remains intentionally small. Third-party
-overlays can still implement only `SendBatch`, but upstreamed built-in remote
-sinks should freeze payload bytes and destination identity before retrying.
+The public `sinkapi.Sink` contract remains intentionally small. Upstreamed
+built-in remote sinks and external sink executables should freeze payload bytes
+and destination identity before retrying.
+
+## External sink runtime
+
+If your destination should not be bundled into the stock repo, use the
+versioned external sink runtime:
+
+- config uses `type: "external"`
+- OAS seals the batch locally, then invokes your executable over stdio
+- the executable receives a versioned request and returns `ok`, `retry`, or `permanent`
+
+Read [`spec/sink-runtime/v1`](../../spec/sink-runtime/v1/README.md) and use
+[`examples/config.external.example.json`](../../examples/config.external.example.json) as the config shape reference.
 
 ## Compatibility checklist
 
@@ -173,17 +191,13 @@ reference bar.
 
 ## Current integration reality
 
-The public contracts are ready for third-party authoring today.
+The stock `oas` CLI now supports out-of-process external sinks, but it still
+does **not** dynamically discover external source adapters. In practice:
 
-The stock `oas` CLI does **not** yet dynamically discover external adapters or
-sinks. The reference runtime currently wires only the built-in types. In
-practice, that means end-to-end integration still happens in one of two ways:
-
-- upstream the adapter or sink into this repo, or
-- maintain a small custom CLI overlay that wires your type into the runtime
-
-That limitation is about runtime registration, not about the published adapter
-and sink contracts.
+- upstream an adapter here if you want it available in the stock `oas` CLI
+- use `type: "external"` for proprietary or unbundled destinations
+- maintain a custom CLI overlay only when you need a custom source adapter or a
+  runtime change outside the published sink/runtime contracts
 
 See [RFC 0002](../../rfcs/0002-external-plugin-runtime.md) for the current
 reasoning behind that boundary.

@@ -8,6 +8,8 @@ These example configs are shape references for common setups.
   remote delivery, suitable for `rsync`, `scp`, or a wrapper transport
 - [`config.s3.example.json`](config.s3.example.json): S3 archival delivery with
   a deterministic object key
+- [`config.external.example.json`](config.external.example.json): out-of-process
+  external sink runtime example for proprietary or unbundled destinations
 
 All example configs assume you run commands from the repo root so the fixture
 source paths `./fixtures/...` resolve correctly.

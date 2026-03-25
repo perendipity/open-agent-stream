@@ -54,7 +54,7 @@ func (s *Service) Normalize(record ledger.Record) (schema.CanonicalEvent, error)
 	if sessionSourceKey == "" {
 		sessionSourceKey = "unknown"
 	}
-	sessionKey := schema.StableSessionKey(envelope.SourceInstanceID, sessionSourceKey)
+	sessionKey := schema.StableSessionKeyForVersion(schema.EventSpecV1, "", envelope.SourceInstanceID, sessionSourceKey)
 	sequence, err := s.nextSequence(sessionKey)
 	if err != nil {
 		return schema.CanonicalEvent{}, err
@@ -72,7 +72,7 @@ func (s *Service) Normalize(record ledger.Record) (schema.CanonicalEvent, error)
 	}
 	kind, actor, parseStatus, payloadMap := s.classify(envelope, payload, parseErr)
 	event := schema.CanonicalEvent{
-		EventVersion:     schema.CanonicalEventVersion,
+		EventVersion:     schema.CanonicalEventVersionV1,
 		SourceType:       envelope.SourceType,
 		SourceInstanceID: envelope.SourceInstanceID,
 		SessionKey:       sessionKey,

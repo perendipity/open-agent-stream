@@ -79,6 +79,9 @@ func Load(path string) (Config, error) {
 
 func Validate(cfg Config) error {
 	var errs []error
+	if strings.TrimSpace(cfg.MachineID) == "" {
+		errs = append(errs, errors.New("machine_id: is required"))
+	}
 	if _, err := cfg.PollIntervalValue(); err != nil {
 		errs = append(errs, fmt.Errorf("poll_interval: %w", err))
 	}
@@ -120,6 +123,9 @@ func Validate(cfg Config) error {
 		}
 		if sink.Type == "" {
 			errs = append(errs, fmt.Errorf("sinks[%d].type: is required", i))
+		}
+		if normalized := schema.NormalizeEventSpecVersion(EffectiveSinkEventSpecVersion(sink.EventSpecVersion)); normalized == "" {
+			errs = append(errs, fmt.Errorf("sinks[%d].event_spec_version: must be %q or %q", i, schema.EventSpecV1, schema.EventSpecV2))
 		}
 		if err := validateDeliveryConfig(sink.Delivery); err != nil {
 			errs = append(errs, fmt.Errorf("sinks[%d].delivery: %w", i, err))
@@ -206,6 +212,7 @@ func applyDefaults(cfg *Config, raw map[string]json.RawMessage) {
 		if cfg.Sinks[i].Settings == nil {
 			cfg.Sinks[i].Settings = map[string]any{}
 		}
+		cfg.Sinks[i].EventSpecVersion = EffectiveSinkEventSpecVersion(cfg.Sinks[i].EventSpecVersion)
 	}
 }
 

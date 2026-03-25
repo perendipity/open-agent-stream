@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -46,27 +47,56 @@ func (s *Sink) ID() string   { return s.cfg.ID }
 func (s *Sink) Type() string { return s.cfg.Type }
 
 func (s *Sink) Init(context.Context) error {
-	s.url = sinkutil.String(s.cfg, "url")
-	if s.url == "" {
-		return errors.New("http sink requires url")
-	}
-	s.method = strings.ToUpper(firstNonEmpty(sinkutil.String(s.cfg, "method"), http.MethodPost))
-	s.format = firstNonEmpty(sinkutil.String(s.cfg, "format"), sinkpayload.FormatOASBatchJSON)
-	timeout, err := sinkutil.Duration(s.cfg, "timeout", 10*time.Second)
+	resolved, err := s.resolve()
 	if err != nil {
 		return err
 	}
-	s.timeout = timeout
-	s.headers = sinkutil.StringMap(s.cfg, "headers")
-	if s.headers == nil {
-		s.headers = map[string]string{}
-	}
-	s.bearerTokenEnv = sinkutil.String(s.cfg, "bearer_token_env")
-	s.successRules = parseStatusRules(sinkutil.StringSlice(s.cfg, "success_statuses"), []statusRule{{min: 200, max: 299}})
-	s.retryRules = parseStatusRules(sinkutil.StringSlice(s.cfg, "retry_on_statuses"), []statusRule{{min: 429, max: 429}, {min: 500, max: 599}})
-	s.permanentRules = parseStatusRules(sinkutil.StringSlice(s.cfg, "permanent_on_statuses"), []statusRule{{min: 400, max: 499}})
-	s.client = &http.Client{Timeout: timeout}
+	s.url = resolved.URL
+	s.method = resolved.Method
+	s.format = resolved.Format
+	s.timeout = resolved.Timeout
+	s.headers = resolved.Headers
+	s.bearerTokenEnv = resolved.BearerTokenEnv
+	s.successRules = resolved.SuccessRules
+	s.retryRules = resolved.RetryRules
+	s.permanentRules = resolved.PermanentRules
+	s.client = &http.Client{Timeout: resolved.Timeout}
 	return nil
+}
+
+func (s *Sink) resolve() (resolvedConfig, error) {
+	resolved := resolvedConfig{
+		URL:            sinkutil.String(s.cfg, "url"),
+		Method:         strings.ToUpper(firstNonEmpty(sinkutil.String(s.cfg, "method"), http.MethodPost)),
+		Format:         firstNonEmpty(sinkutil.String(s.cfg, "format"), sinkpayload.FormatOASBatchJSON),
+		Headers:        sinkutil.StringMap(s.cfg, "headers"),
+		BearerTokenEnv: sinkutil.String(s.cfg, "bearer_token_env"),
+		ProbeURL:       sinkutil.String(s.cfg, "probe_url"),
+		ProbeMethod:    strings.ToUpper(firstNonEmpty(sinkutil.String(s.cfg, "probe_method"), http.MethodHead)),
+		SuccessRules:   parseStatusRules(sinkutil.StringSlice(s.cfg, "success_statuses"), []statusRule{{min: 200, max: 299}}),
+		RetryRules:     parseStatusRules(sinkutil.StringSlice(s.cfg, "retry_on_statuses"), []statusRule{{min: 429, max: 429}, {min: 500, max: 599}}),
+		PermanentRules: parseStatusRules(sinkutil.StringSlice(s.cfg, "permanent_on_statuses"), []statusRule{{min: 400, max: 499}}),
+	}
+	if resolved.URL == "" {
+		return resolvedConfig{}, errors.New("http sink requires url")
+	}
+	if _, err := url.ParseRequestURI(resolved.URL); err != nil {
+		return resolvedConfig{}, fmt.Errorf("http sink url: %w", err)
+	}
+	timeout, err := sinkutil.Duration(s.cfg, "timeout", 10*time.Second)
+	if err != nil {
+		return resolvedConfig{}, err
+	}
+	resolved.Timeout = timeout
+	if resolved.Headers == nil {
+		resolved.Headers = map[string]string{}
+	}
+	if resolved.ProbeURL != "" {
+		if _, err := url.ParseRequestURI(resolved.ProbeURL); err != nil {
+			return resolvedConfig{}, fmt.Errorf("http sink probe_url: %w", err)
+		}
+	}
+	return resolved, nil
 }
 
 func (s *Sink) SealBatch(_ context.Context, batch sinkapi.Batch, meta delivery.PreparedDispatch) (delivery.PreparedDispatch, error) {
@@ -145,9 +175,54 @@ func (s *Sink) SendBatch(ctx context.Context, batch sinkapi.Batch) (sinkapi.Resu
 	return s.SendPrepared(ctx, prepared)
 }
 
-func (s *Sink) Flush(context.Context) error  { return nil }
-func (s *Sink) Health(context.Context) error { return nil }
-func (s *Sink) Close(context.Context) error  { return nil }
+func (s *Sink) Flush(context.Context) error { return nil }
+func (s *Sink) Health(ctx context.Context) error {
+	resolved, err := s.resolve()
+	if err != nil {
+		return err
+	}
+	if resolved.BearerTokenEnv != "" && strings.TrimSpace(os.Getenv(resolved.BearerTokenEnv)) == "" {
+		return fmt.Errorf("http sink bearer_token_env %q is set but empty", resolved.BearerTokenEnv)
+	}
+	if resolved.ProbeURL == "" {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, resolved.ProbeMethod, resolved.ProbeURL, nil)
+	if err != nil {
+		return err
+	}
+	for k, v := range resolved.Headers {
+		req.Header.Set(k, v)
+	}
+	if resolved.BearerTokenEnv != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(os.Getenv(resolved.BearerTokenEnv)))
+	}
+	client := &http.Client{Timeout: resolved.Timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		return nil
+	}
+	return errors.New("http sink probe returned " + resp.Status)
+}
+func (s *Sink) Close(context.Context) error { return nil }
+
+type resolvedConfig struct {
+	URL            string
+	Method         string
+	Format         string
+	Timeout        time.Duration
+	Headers        map[string]string
+	BearerTokenEnv string
+	ProbeURL       string
+	ProbeMethod    string
+	SuccessRules   []statusRule
+	RetryRules     []statusRule
+	PermanentRules []statusRule
+}
 
 func parseStatusRules(values []string, fallback []statusRule) []statusRule {
 	if len(values) == 0 {

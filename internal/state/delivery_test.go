@@ -102,3 +102,66 @@ func TestDeliveryProgressTracksAckedAndTerminalOffsetsSeparately(t *testing.T) {
 		t.Fatal("expected last terminal error to be recorded")
 	}
 }
+
+func TestRetryDeliveryBatchRequeuesQuarantinedBatch(t *testing.T) {
+	t.Parallel()
+
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	if err := store.EnqueueDeliveryItem("remote", 1, sinkapi.Batch{Events: []schema.CanonicalEvent{{EventID: "evt-1"}}}, DeliveryItemStatusPending, now); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListPendingDeliveryItems("remote", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := json.Marshal(map[string]any{"payload": "sealed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SealDeliveryBatch(DeliveryBatch{
+		BatchID:         "batch-1",
+		SinkID:          "remote",
+		PreparedJSON:    prepared,
+		PayloadBytes:    len(prepared),
+		LedgerMinOffset: 1,
+		LedgerMaxOffset: 1,
+		EventCount:      1,
+		Status:          DeliveryBatchStatusPending,
+		NextAttemptAt:   now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, []int64{items[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.QuarantineDeliveryBatch("batch-1", "permanent failure", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	batches, err := store.ListDeliveryBatches("remote", []string{DeliveryBatchStatusQuarantined}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(batches), 1; got != want {
+		t.Fatalf("len(batches)=%d, want %d", got, want)
+	}
+
+	if err := store.RetryDeliveryBatch("batch-1", now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := store.GetDeliveryBatch("batch-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := retried.Status, DeliveryBatchStatusRetrying; got != want {
+		t.Fatalf("status=%q, want %q", got, want)
+	}
+	if retried.LastError != "" {
+		t.Fatalf("last_error=%q, want cleared", retried.LastError)
+	}
+}

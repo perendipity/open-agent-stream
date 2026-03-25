@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.open-agent-stream.oas</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/oas</string>
+    <string>daemon</string>
+    <string>run</string>
+    <string>-config</string>
+    <string>/usr/local/etc/oas/oas.json</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/REPLACE_ME</string>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/oas.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/oas.log</string>
+  <key>WorkingDirectory</key>
+  <string>/usr/local/var/lib/oas</string>
+</dict>
+</plist>

@@ -17,8 +17,9 @@ import (
 )
 
 type fakePutObjectClient struct {
-	input *s3.PutObjectInput
-	err   error
+	input     *s3.PutObjectInput
+	headInput *s3.HeadBucketInput
+	err       error
 }
 
 func (f *fakePutObjectClient) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -27,6 +28,14 @@ func (f *fakePutObjectClient) PutObject(_ context.Context, input *s3.PutObjectIn
 		return nil, f.err
 	}
 	return &s3.PutObjectOutput{}, nil
+}
+
+func (f *fakePutObjectClient) HeadBucket(_ context.Context, input *s3.HeadBucketInput, _ ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
+	f.headInput = input
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &s3.HeadBucketOutput{}, nil
 }
 
 func TestInitRejectsNonDeterministicKeyTemplate(t *testing.T) {
@@ -192,5 +201,29 @@ func TestSendPreparedReturnsUnderlyingClientError(t *testing.T) {
 	})
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("err=%v, want boom", err)
+	}
+}
+
+func TestHealthChecksCredentialsAndBucketAccess(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_SESSION_TOKEN", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	client := &fakePutObjectClient{}
+	sink := New(sinkapi.Config{
+		ID:   "archive",
+		Type: "s3",
+		Settings: map[string]any{
+			"bucket": "example-bucket",
+			"region": "us-west-2",
+		},
+	})
+	sink.client = client
+	if err := sink.Health(context.Background()); err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	if client.headInput == nil || client.headInput.Bucket == nil || *client.headInput.Bucket != "example-bucket" {
+		t.Fatalf("head bucket input=%v, want example-bucket", client.headInput)
 	}
 }

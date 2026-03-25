@@ -18,6 +18,7 @@ Core commands:
   version   Print the installed CLI version
   run       Run one ingestion/normalization/delivery cycle
   daemon    Manage continuous daemon mode
+  delivery  Inspect and retry sealed delivery batches
   config    Initialize, inspect, or validate config
   replay    Replay ledger entries to sinks
   export    Export canonical events as JSONL
@@ -30,6 +31,7 @@ Core commands:
 Use:
   oas <command> --help
   oas daemon --help
+  oas delivery --help
   oas config --help
   oas analytics --help
 
@@ -38,6 +40,7 @@ Common starts:
   oas config init -output ./oas.json
   oas run -config ./oas.json
   oas daemon start -config ./oas.json
+  oas delivery status -config ./oas.json
   oas export -config ./oas.json -output ./exports/events.jsonl
   oas analytics build -config ./oas.json
   oas summary -input ./exports/events.jsonl
@@ -98,6 +101,32 @@ Use:
 `
 	if got := out.String(); got != want {
 		t.Fatalf("writeDaemonUsage() mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+func TestWriteDeliveryUsageSnapshot(t *testing.T) {
+	var out bytes.Buffer
+	writeDeliveryUsage(&out)
+
+	const want = `usage: oas delivery <subcommand> -config <path>
+
+Subcommands:
+  status    Show per-sink delivery queue and watermark state
+  list      List pending, retrying, or quarantined delivery batches
+  inspect   Inspect one sealed delivery batch
+  retry     Requeue one quarantined delivery batch
+
+Examples:
+  oas delivery status -config ./examples/config.example.json
+  oas delivery list -config ./examples/config.example.json -status quarantined
+  oas delivery inspect -config ./examples/config.example.json -batch batch_123
+  oas delivery retry -config ./examples/config.example.json -batch batch_123
+
+Use:
+  oas delivery <subcommand> --help
+`
+	if got := out.String(); got != want {
+		t.Fatalf("writeDeliveryUsage() mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 

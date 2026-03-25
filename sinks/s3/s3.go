@@ -21,7 +21,7 @@ import (
 
 type Sink struct {
 	cfg          sinkapi.Config
-	client       putObjectClient
+	client       objectClient
 	bucket       string
 	prefix       string
 	keyTemplate  string
@@ -30,8 +30,9 @@ type Sink struct {
 	sse          string
 }
 
-type putObjectClient interface {
+type objectClient interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	HeadBucket(ctx context.Context, params *s3.HeadBucketInput, optFns ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
 }
 
 func New(cfg sinkapi.Config) *Sink {
@@ -137,9 +138,28 @@ func (s *Sink) SendBatch(ctx context.Context, batch sinkapi.Batch) (sinkapi.Resu
 	return s.SendPrepared(ctx, prepared)
 }
 
-func (s *Sink) Flush(context.Context) error  { return nil }
-func (s *Sink) Health(context.Context) error { return nil }
-func (s *Sink) Close(context.Context) error  { return nil }
+func (s *Sink) Flush(context.Context) error { return nil }
+func (s *Sink) Health(ctx context.Context) error {
+	bucket := sinkutil.String(s.cfg, "bucket")
+	if bucket == "" {
+		return errors.New("s3 sink requires bucket")
+	}
+	region := sinkutil.String(s.cfg, "region")
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return err
+	}
+	if _, err := awsCfg.Credentials.Retrieve(ctx); err != nil {
+		return err
+	}
+	client := s.client
+	if client == nil {
+		client = s3.NewFromConfig(awsCfg)
+	}
+	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: &bucket})
+	return err
+}
+func (s *Sink) Close(context.Context) error { return nil }
 
 func (s *Sink) resolveKey(meta delivery.PreparedDispatch) string {
 	replacements := map[string]string{
