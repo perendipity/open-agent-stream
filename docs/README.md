@@ -13,8 +13,9 @@ Read the repo in this order:
 9. [`governance/cli-standards.md`](governance/cli-standards.md)
 10. [`roadmap/cli-usability.md`](roadmap/cli-usability.md)
 11. [`adoption/install.md`](adoption/install.md)
-12. [`adoption/early-adopters.md`](adoption/early-adopters.md)
-13. [`roadmap/milestones.md`](roadmap/milestones.md)
+12. [`adoption/remote-destinations.md`](adoption/remote-destinations.md)
+13. [`adoption/early-adopters.md`](adoption/early-adopters.md)
+14. [`roadmap/milestones.md`](roadmap/milestones.md)
 
 ## Structure
 

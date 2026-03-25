@@ -23,7 +23,17 @@ Built-in sink classes in the reference implementation:
 - `sqlite`: `idempotent`
 - `jsonl`: `append_only`
 - `stdout`: `append_only`
-- `webhook`: `side_effecting`
+- `s3`: `append_only`
+- `http`: `side_effecting`
+- `command`: `side_effecting`
+- `webhook`: `side_effecting` (compatibility alias to `http`)
+
+The stock runtime's built-in sinks also use a structured config shape:
+
+- `settings`: sink-specific fields such as URLs, bucket names, key templates,
+  argv arrays, headers, and env-var references
+- `delivery`: batch/window/retry policy for when prepared events become sealed
+  dispatch batches
 
 `Replay` and `export` are distinct behaviors:
 

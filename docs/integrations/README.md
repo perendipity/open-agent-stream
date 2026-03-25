@@ -139,10 +139,22 @@ func (s *Sink) Close(context.Context) error  { return nil }
 
 A sink should document:
 
-- required `options` keys
+- required `settings` keys and any legacy `options` compatibility
+- supported `delivery` controls when the sink participates in the stock
+  runtime's built-in delivery manager
 - whether it consumes only canonical events or also raw envelopes
 - replay class and duplicate-delivery expectations
 - privacy/redaction assumptions before data leaves the machine
+
+For the stock built-in runtime, operators should expect sink config to split
+into:
+
+- `settings` for destination-specific data
+- `delivery` for batching, fixed-window release, retry backoff, and poison-batch handling
+
+The public `sinkapi.Sink` contract remains intentionally small. Third-party
+overlays can still implement only `SendBatch`, but upstreamed built-in remote
+sinks should freeze payload bytes and destination identity before retrying.
 
 ## Compatibility checklist
 
