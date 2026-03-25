@@ -90,7 +90,6 @@ func (r *Router) Route(ctx context.Context, batch sinkapi.Batch, fromOffset, toO
 		}
 		result, err := sink.SendBatch(ctx, filtered)
 		if err != nil {
-			_ = r.state.EnqueueSinkBatch(sink.ID(), fromOffset, toOffset, filtered, err.Error())
 			errs = append(errs, err)
 			continue
 		}
@@ -115,41 +114,6 @@ func (r *Router) Route(ctx context.Context, batch sinkapi.Batch, fromOffset, toO
 }
 
 func (r *Router) DrainRetries(ctx context.Context) error {
-	var errs []error
-	for _, sink := range r.sinks {
-		pending, err := r.state.ListSinkBatches(sink.ID(), 100)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		for _, item := range pending {
-			result, err := sink.SendBatch(ctx, item.Batch)
-			if err != nil {
-				_ = r.state.IncrementSinkBatchAttempt(item.ID, err.Error())
-				errs = append(errs, err)
-				continue
-			}
-			checkpoint := result.Checkpoint
-			checkpoint.SinkID = sink.ID()
-			checkpoint.LastLedgerOffset = item.ToOffset
-			checkpoint.AckedAt = time.Now().UTC()
-			if checkpoint.LastEventID == "" && len(item.Batch.Events) > 0 {
-				checkpoint.LastEventID = item.Batch.Events[len(item.Batch.Events)-1].EventID
-			}
-			if checkpoint.DeliveryCount == 0 {
-				checkpoint.DeliveryCount = len(item.Batch.Events)
-			}
-			if err := r.state.PutSinkCheckpoint(checkpoint); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			if err := r.state.DeleteSinkBatch(item.ID); err != nil {
-				errs = append(errs, err)
-			}
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
+	_ = ctx
 	return nil
 }

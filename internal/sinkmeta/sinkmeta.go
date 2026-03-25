@@ -28,9 +28,9 @@ func ReplayClassForType(sinkType string) ReplayClass {
 	switch sinkType {
 	case "sqlite":
 		return ReplayClassIdempotent
-	case "jsonl", "stdout":
+	case "jsonl", "stdout", "s3":
 		return ReplayClassAppendOnly
-	case "webhook":
+	case "webhook", "http", "command":
 		return ReplayClassSideEffecting
 	default:
 		return ReplayClassSideEffecting

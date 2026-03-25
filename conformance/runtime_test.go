@@ -417,13 +417,6 @@ func TestSinkIsolation(t *testing.T) {
 	if good.calls != 1 {
 		t.Fatalf("expected good sink to receive batch, got %d calls", good.calls)
 	}
-	pending, err := stateStore.ListSinkBatches("bad", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pending) != 1 {
-		t.Fatalf("expected 1 pending batch, got %d", len(pending))
-	}
 }
 
 func repoRoot(t *testing.T) string {

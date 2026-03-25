@@ -115,7 +115,16 @@ func writeConfigInspectReport(writer io.Writer, view configInspectView) error {
 	if len(view.Config.Sinks) > 0 {
 		b.WriteString("Sinks:\n")
 		for _, sink := range view.Config.Sinks {
-			fmt.Fprintf(&b, "  - %s (%s)\n", sink.ID, sink.Type)
+			fmt.Fprintf(&b, "  - %s (%s): max_batch_events=%d max_batch_age=%s window_every=%s retry_initial=%s retry_max=%s poison_after=%d\n",
+				sink.ID,
+				sink.Type,
+				sink.Delivery.MaxBatchEvents,
+				emptyConfigValue(sink.Delivery.MaxBatchAge),
+				emptyConfigValue(sink.Delivery.WindowEvery),
+				emptyConfigValue(sink.Delivery.RetryInitialBackoff),
+				emptyConfigValue(sink.Delivery.RetryMaxBackoff),
+				sink.Delivery.PoisonAfterFailures,
+			)
 		}
 		b.WriteString("\n")
 	}
@@ -151,4 +160,11 @@ func appendKeyValueSection(builder *strings.Builder, title string, rows ...[2]st
 		fmt.Fprintf(builder, "  %-*s  %s\n", width, row[0], row[1])
 	}
 	builder.WriteString("\n")
+}
+
+func emptyConfigValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }

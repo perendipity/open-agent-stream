@@ -397,7 +397,7 @@ func TestBuildDaemonStatusViewProducesStructuredPathsAndRuntime(t *testing.T) {
 		},
 	}
 
-	view := buildDaemonStatusView("/tmp/oas.json", cfg, paths, snapshot, storage, nil)
+	view := buildDaemonStatusView("/tmp/oas.json", cfg, paths, snapshot, storage, nil, nil, nil)
 
 	if got, want := view.State, daemonStateRunning; got != want {
 		t.Fatalf("State = %q, want %q", got, want)
