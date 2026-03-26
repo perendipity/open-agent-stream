@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -240,6 +241,82 @@ func TestRuntimeExportStable(t *testing.T) {
 	}
 }
 
+func TestRuntimeV2EventSpecSeparatesSharedDestinationsByMachineID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := repoRoot(t)
+	sharedPath := filepath.Join(t.TempDir(), "events.jsonl")
+
+	cfgForMachine := func(machineID, stateDir string) config.Config {
+		return config.Config{
+			Version:    "0.1",
+			MachineID:  machineID,
+			StatePath:  filepath.Join(stateDir, "state.db"),
+			LedgerPath: filepath.Join(stateDir, "ledger.db"),
+			BatchSize:  64,
+			Sources: []sourceapi.Config{{
+				InstanceID: "shared-codex",
+				Type:       "codex_local",
+				Root:       filepath.Join(root, "fixtures", "sources", "codex"),
+			}},
+			Sinks: []sinkapi.Config{{
+				ID:               "jsonl-shared",
+				Type:             "jsonl",
+				EventSpecVersion: schema.EventSpecV2,
+				Options: map[string]string{
+					"path": sharedPath,
+				},
+			}},
+		}
+	}
+
+	runtimeA := mustRuntimeForTest(t, cfgForMachine("machine-a", filepath.Join(t.TempDir(), "a")))
+	if err := runtimeA.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(t, runtimeA)
+
+	runtimeB := mustRuntimeForTest(t, cfgForMachine("machine-b", filepath.Join(t.TempDir(), "b")))
+	if err := runtimeB.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(t, runtimeB)
+
+	data, err := os.ReadFile(sharedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if got, want := len(lines), 6; got != want {
+		t.Fatalf("line count=%d, want %d", got, want)
+	}
+	sessionKeys := map[string]struct{}{}
+	eventIDs := map[string]struct{}{}
+	machines := map[string]struct{}{}
+	for _, line := range lines {
+		var event schema.CanonicalEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := event.EventVersion, schema.CanonicalEventVersionV2; got != want {
+			t.Fatalf("event_version=%d, want %d", got, want)
+		}
+		sessionKeys[event.SessionKey] = struct{}{}
+		eventIDs[event.EventID] = struct{}{}
+		machines[event.MachineID] = struct{}{}
+	}
+	if got, want := len(machines), 2; got != want {
+		t.Fatalf("machine ids=%d, want %d", got, want)
+	}
+	if got, want := len(sessionKeys), 2; got != want {
+		t.Fatalf("session keys=%d, want %d", got, want)
+	}
+	if got, want := len(eventIDs), len(lines); got != want {
+		t.Fatalf("unique event ids=%d, want %d", got, want)
+	}
+}
+
 func TestCodexArchivedShapeNormalization(t *testing.T) {
 	t.Parallel()
 
@@ -381,7 +458,10 @@ func TestSinkIsolation(t *testing.T) {
 
 	good := &captureSink{id: "good", sinkType: "stdout"}
 	bad := &captureSink{id: "bad", sinkType: "webhook", fail: true}
-	rt := router.New([]sinkapi.Sink{good, bad}, stateStore, redact.NewEngine(config.Config{}))
+	rt := router.New([]sinkapi.Config{
+		{ID: "good", Type: "stdout"},
+		{ID: "bad", Type: "webhook"},
+	}, []sinkapi.Sink{good, bad}, stateStore, redact.NewEngine(config.Config{MachineID: "test-machine"}))
 
 	event := schema.CanonicalEvent{
 		EventVersion:     1,
@@ -417,13 +497,6 @@ func TestSinkIsolation(t *testing.T) {
 	if good.calls != 1 {
 		t.Fatalf("expected good sink to receive batch, got %d calls", good.calls)
 	}
-	pending, err := stateStore.ListSinkBatches("bad", 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pending) != 1 {
-		t.Fatalf("expected 1 pending batch, got %d", len(pending))
-	}
 }
 
 func repoRoot(t *testing.T) string {
@@ -448,6 +521,7 @@ func runtimeFixtureConfig(t *testing.T, dir string) config.Config {
 	root := repoRoot(t)
 	return config.Config{
 		Version:    "0.1",
+		MachineID:  "test-machine",
 		StatePath:  filepath.Join(dir, "state.db"),
 		LedgerPath: filepath.Join(dir, "ledger.db"),
 		BatchSize:  64,

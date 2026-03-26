@@ -83,6 +83,63 @@ func Open(path string) (*Store, error) {
 			payload_json TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS delivery_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sink_id TEXT NOT NULL,
+			ledger_offset INTEGER NOT NULL,
+			batch_json TEXT NOT NULL,
+			last_event_id TEXT,
+			event_count INTEGER NOT NULL,
+			payload_bytes INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			batch_id TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE (sink_id, ledger_offset)
+		);`,
+		`CREATE INDEX IF NOT EXISTS delivery_items_sink_status_offset_idx
+		 ON delivery_items (sink_id, status, ledger_offset);`,
+		`CREATE TABLE IF NOT EXISTS delivery_batches (
+			batch_id TEXT PRIMARY KEY,
+			sink_id TEXT NOT NULL,
+			prepared_json TEXT NOT NULL,
+			payload_bytes INTEGER NOT NULL,
+			ledger_min_offset INTEGER NOT NULL,
+			ledger_max_offset INTEGER NOT NULL,
+			event_count INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			next_attempt_at TEXT NOT NULL,
+			last_error TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS delivery_batches_due_idx
+		 ON delivery_batches (status, next_attempt_at, created_at);`,
+		`CREATE TABLE IF NOT EXISTS delivery_attempts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sink_id TEXT NOT NULL,
+			batch_id TEXT NOT NULL,
+			outcome TEXT NOT NULL,
+			event_count INTEGER NOT NULL,
+			payload_bytes INTEGER NOT NULL,
+			attempted_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS delivery_attempts_sink_time_idx
+		 ON delivery_attempts (sink_id, attempted_at);`,
+		`CREATE TABLE IF NOT EXISTS sink_progress (
+			sink_id TEXT PRIMARY KEY,
+			acked_contiguous_offset INTEGER NOT NULL DEFAULT 0,
+			terminal_contiguous_offset INTEGER NOT NULL DEFAULT 0,
+			gap_count INTEGER NOT NULL DEFAULT 0,
+			successful_batches INTEGER NOT NULL DEFAULT 0,
+			successful_events INTEGER NOT NULL DEFAULT 0,
+			failed_attempts INTEGER NOT NULL DEFAULT 0,
+			quarantined_batches INTEGER NOT NULL DEFAULT 0,
+			last_terminal_error TEXT,
+			last_success_at TEXT,
+			updated_at TEXT NOT NULL
+		);`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

@@ -1,0 +1,35 @@
+{
+  "version": "0.1",
+  "machine_id": "example-external",
+  "state_path": "./var/external-state.db",
+  "ledger_path": "./var/external-ledger.db",
+  "batch_size": 64,
+  "sources": [
+    {
+      "instance_id": "codex-local",
+      "type": "codex_local",
+      "root": "./fixtures/sources/codex"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "vendor-plugin",
+      "type": "external",
+      "event_spec_version": "v2",
+      "settings": {
+        "plugin_type": "vendor-api",
+        "argv": ["/usr/local/bin/oas-vendor-plugin"],
+        "format": "canonical_jsonl.gz",
+        "timeout": "30s",
+        "max_output_bytes": 4096
+      },
+      "delivery": {
+        "max_batch_events": 100,
+        "max_batch_age": "5s",
+        "retry_initial_backoff": "5s",
+        "retry_max_backoff": "1m",
+        "poison_after_failures": 5
+      }
+    }
+  ]
+}

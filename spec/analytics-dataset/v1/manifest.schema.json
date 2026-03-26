@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-agent-stream.dev/spec/analytics-dataset/v1/manifest.schema.json",
+  "title": "Analytics Dataset Manifest",
+  "type": "object",
+  "required": [
+    "snapshot_id",
+    "dataset_version",
+    "derivation_version",
+    "engine_version",
+    "machine_id",
+    "machine_id_origin",
+    "ledger_instance_id",
+    "exported_at",
+    "coverage_mode",
+    "tables"
+  ],
+  "properties": {
+    "snapshot_id": { "type": "string" },
+    "dataset_version": { "type": "string", "const": "analytics-dataset/v1" },
+    "derivation_version": { "type": "string" },
+    "engine_version": { "type": "string" },
+    "machine_id": { "type": "string" },
+    "machine_id_origin": {
+      "type": "string",
+      "enum": ["captured", "config_backfill"]
+    },
+    "ledger_instance_id": { "type": "string" },
+    "exported_at": { "type": "string", "format": "date-time" },
+    "coverage_mode": {
+      "type": "string",
+      "enum": ["complete_history", "cache_preserved_history", "retained_window_only"]
+    },
+    "cache_covered_offset_range": {
+      "type": "object",
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "integer", "minimum": 0 },
+        "max": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "retained_offset_range_at_export": {
+      "type": "object",
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "type": "integer", "minimum": 0 },
+        "max": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "rows", "file", "sha256"],
+        "properties": {
+          "name": { "type": "string" },
+          "rows": { "type": "integer", "minimum": 0 },
+          "file": { "type": "string" },
+          "sha256": { "type": "string" },
+          "primary_key": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/open-agent-stream/open-agent-stream/internal/config"
+	"github.com/open-agent-stream/open-agent-stream/internal/eventspec"
 	"github.com/open-agent-stream/open-agent-stream/internal/redact"
 	"github.com/open-agent-stream/open-agent-stream/internal/state"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
@@ -12,19 +14,27 @@ import (
 )
 
 type Router struct {
-	sinks    []sinkapi.Sink
-	byID     map[string]sinkapi.Sink
+	sinks    []sinkEntry
+	byID     map[string]sinkEntry
 	state    *state.Store
 	redactor *redact.Engine
 }
 
-func New(sinks []sinkapi.Sink, stateStore *state.Store, redactor *redact.Engine) *Router {
-	byID := make(map[string]sinkapi.Sink, len(sinks))
-	for _, sink := range sinks {
-		byID[sink.ID()] = sink
+type sinkEntry struct {
+	cfg  sinkapi.Config
+	sink sinkapi.Sink
+}
+
+func New(configs []sinkapi.Config, sinks []sinkapi.Sink, stateStore *state.Store, redactor *redact.Engine) *Router {
+	entries := make([]sinkEntry, 0, len(sinks))
+	byID := make(map[string]sinkEntry, len(sinks))
+	for idx, sink := range sinks {
+		entry := sinkEntry{cfg: configs[idx], sink: sink}
+		entries = append(entries, entry)
+		byID[sink.ID()] = entry
 	}
 	return &Router{
-		sinks:    sinks,
+		sinks:    entries,
 		byID:     byID,
 		state:    stateStore,
 		redactor: redactor,
@@ -33,8 +43,8 @@ func New(sinks []sinkapi.Sink, stateStore *state.Store, redactor *redact.Engine)
 
 func (r *Router) Init(ctx context.Context) error {
 	var errs []error
-	for _, sink := range r.sinks {
-		if err := sink.Init(ctx); err != nil {
+	for _, entry := range r.sinks {
+		if err := entry.sink.Init(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -46,8 +56,8 @@ func (r *Router) Init(ctx context.Context) error {
 
 func (r *Router) Close(ctx context.Context) error {
 	var errs []error
-	for _, sink := range r.sinks {
-		if err := sink.Close(ctx); err != nil {
+	for _, entry := range r.sinks {
+		if err := entry.sink.Close(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -59,8 +69,8 @@ func (r *Router) Close(ctx context.Context) error {
 
 func (r *Router) Flush(ctx context.Context) error {
 	var errs []error
-	for _, sink := range r.sinks {
-		if err := sink.Flush(ctx); err != nil {
+	for _, entry := range r.sinks {
+		if err := entry.sink.Flush(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -72,15 +82,20 @@ func (r *Router) Flush(ctx context.Context) error {
 
 func (r *Router) Route(ctx context.Context, batch sinkapi.Batch, fromOffset, toOffset int64) error {
 	var errs []error
-	for _, sink := range r.sinks {
-		filtered, _, err := r.redactor.Apply(sink.ID(), batch)
+	for _, entry := range r.sinks {
+		versioned, err := eventspec.Batch(batch, config.EffectiveSinkEventSpecVersion(entry.cfg.EventSpecVersion))
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		filtered, _, err := r.redactor.Apply(entry.sink.ID(), versioned)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		if len(filtered.Events) == 0 && len(filtered.RawEnvelopes) == 0 {
 			if err := r.state.PutSinkCheckpoint(schema.SinkCheckpoint{
-				SinkID:           sink.ID(),
+				SinkID:           entry.sink.ID(),
 				LastLedgerOffset: toOffset,
 				AckedAt:          time.Now().UTC(),
 			}); err != nil {
@@ -88,14 +103,13 @@ func (r *Router) Route(ctx context.Context, batch sinkapi.Batch, fromOffset, toO
 			}
 			continue
 		}
-		result, err := sink.SendBatch(ctx, filtered)
+		result, err := entry.sink.SendBatch(ctx, filtered)
 		if err != nil {
-			_ = r.state.EnqueueSinkBatch(sink.ID(), fromOffset, toOffset, filtered, err.Error())
 			errs = append(errs, err)
 			continue
 		}
 		checkpoint := result.Checkpoint
-		checkpoint.SinkID = sink.ID()
+		checkpoint.SinkID = entry.sink.ID()
 		checkpoint.LastLedgerOffset = toOffset
 		checkpoint.AckedAt = time.Now().UTC()
 		if checkpoint.LastEventID == "" && len(filtered.Events) > 0 {
@@ -115,41 +129,6 @@ func (r *Router) Route(ctx context.Context, batch sinkapi.Batch, fromOffset, toO
 }
 
 func (r *Router) DrainRetries(ctx context.Context) error {
-	var errs []error
-	for _, sink := range r.sinks {
-		pending, err := r.state.ListSinkBatches(sink.ID(), 100)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		for _, item := range pending {
-			result, err := sink.SendBatch(ctx, item.Batch)
-			if err != nil {
-				_ = r.state.IncrementSinkBatchAttempt(item.ID, err.Error())
-				errs = append(errs, err)
-				continue
-			}
-			checkpoint := result.Checkpoint
-			checkpoint.SinkID = sink.ID()
-			checkpoint.LastLedgerOffset = item.ToOffset
-			checkpoint.AckedAt = time.Now().UTC()
-			if checkpoint.LastEventID == "" && len(item.Batch.Events) > 0 {
-				checkpoint.LastEventID = item.Batch.Events[len(item.Batch.Events)-1].EventID
-			}
-			if checkpoint.DeliveryCount == 0 {
-				checkpoint.DeliveryCount = len(item.Batch.Events)
-			}
-			if err := r.state.PutSinkCheckpoint(checkpoint); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-			if err := r.state.DeleteSinkBatch(item.ID); err != nil {
-				errs = append(errs, err)
-			}
-		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
+	_ = ctx
 	return nil
 }

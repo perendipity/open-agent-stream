@@ -27,6 +27,26 @@
       "id": "stdout",
       "type": "stdout",
       "options": {}
+    },
+    {
+      "id": "remote-http",
+      "type": "http",
+      "settings": {
+        "url": "https://collector.example.invalid/ingest",
+        "method": "POST",
+        "format": "oas_batch_json",
+        "bearer_token_env": "OAS_REMOTE_TOKEN",
+        "headers": {
+          "X-OAS-Example": "remote-http"
+        }
+      },
+      "delivery": {
+        "max_batch_events": 10,
+        "max_batch_age": "2s",
+        "retry_initial_backoff": "2s",
+        "retry_max_backoff": "30s",
+        "poison_after_failures": 5
+      }
     }
   ],
   "privacy": {
@@ -42,6 +62,10 @@
     },
     "per_sink": {
       "stdout": {
+        "drop_raw": false,
+        "redact_keys": ["api_key", "token", "secret"]
+      },
+      "remote-http": {
         "drop_raw": false,
         "redact_keys": ["api_key", "token", "secret"]
       }

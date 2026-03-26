@@ -26,8 +26,8 @@ This repository is intentionally spec-first. The initial implementation includes
   - source adapters for Codex-style and Claude-style local artifacts
   - a SQLite-backed raw ledger and state store
   - a canonical normalizer
-  - neutral sinks for `jsonl`, `sqlite`, `stdout`, and `webhook`
-  - CLI commands for `run`, `daemon`, `replay`, `export`, `doctor`, and `validate`
+  - neutral sinks for `jsonl`, `sqlite`, `stdout`, `http`, `command`, and `s3`, plus a `webhook` compatibility alias to `http`
+  - CLI commands for `run`, `daemon`, `replay`, `export`, `analytics`, `doctor`, and `validate`
 
 ## Non-Goals
 
@@ -83,7 +83,11 @@ oas config init -output ./oas.json
 
 This creates a starter config with current defaults, fixture-backed Codex and
 Claude sources for a local demo, and a `stdout` sink. If you want a fuller
-reference config, see [`examples/config.example.json`](examples/config.example.json).
+reference config, see [`examples/config.example.json`](examples/config.example.json)
+and the examples index in [`examples/README.md`](examples/README.md).
+That reference config includes a placeholder remote `http` sink using the
+current `settings` and `delivery` blocks, so treat it as a shape reference and
+edit the destination before you run it against a real endpoint.
 
 ### 2. Inspect and validate what OAS will actually use
 
@@ -169,7 +173,22 @@ What to look for:
   incomplete command rows, and `-command-limit 0` restores the full command
   list when needed
 
-### 6. Move from one-shot runs to continuous collection
+### 6. Build local analytics
+
+```bash
+oas analytics build -config ./oas.json
+oas analytics query -config ./oas.json
+oas analytics query -config ./oas.json -preset failures
+oas analytics export -config ./oas.json -output ./exports/analytics
+oas analytics status -config ./oas.json
+```
+
+`oas analytics` builds a local DuckDB cache on demand from retained ledger
+history. It is not part of the ingest hot path. The stable portable contract is
+the exported Parquet snapshot plus `manifest.json`; the local DuckDB layout is
+an implementation detail except for the public query views.
+
+### 7. Move from one-shot runs to continuous collection
 
 ```bash
 oas daemon start -config ./oas.json
@@ -200,7 +219,63 @@ Store daemon state on a local filesystem. Network-mounted state directories are
 not supported for daemon lifecycle control because lock semantics are not
 portable there.
 
-### 7. Run operational checks
+### 8. Configure remote destinations
+
+Built-in remote sinks use two config blocks:
+
+- `settings`: sink-specific destination fields such as URL, headers, bucket,
+  key templates, argv, and env-var references for credentials
+- `delivery`: timing and retry policy such as batch size, batch age, fixed
+  release windows, retry backoff, and poison-batch thresholds
+
+Common built-in choices:
+
+- `http`: send neutral OAS batches to a proprietary API or generic HTTP
+  collector
+- `command`: stage a sealed payload file and invoke your own transport such as
+  `rsync`, `scp`, or a wrapper script
+- `s3`: upload sealed batch objects to a bucket with a deterministic object key
+
+A minimal `http` sink looks like:
+
+```json
+{
+  "id": "remote-http",
+  "type": "http",
+  "settings": {
+    "url": "https://collector.example.invalid/ingest",
+    "method": "POST",
+    "format": "oas_batch_json",
+    "bearer_token_env": "OAS_REMOTE_TOKEN"
+  },
+  "delivery": {
+    "max_batch_events": 100,
+    "max_batch_age": "5s",
+    "retry_initial_backoff": "2s",
+    "retry_max_backoff": "1m",
+    "poison_after_failures": 5
+  }
+}
+```
+
+For a full guide with `http`, `command`, and `s3` examples plus a safe local
+validation flow, see
+[`docs/adoption/remote-destinations.md`](docs/adoption/remote-destinations.md).
+
+If you are validating a local checkout in daemon mode, prefer a real built
+binary rather than `go run` so `oas daemon start` re-execs the exact build you
+tested:
+
+```bash
+go build -o ./bin/oas ./cmd/oas
+./bin/oas config print -config ./oas.json
+./bin/oas daemon start -config ./oas.json
+./bin/oas daemon status -config ./oas.json -json
+./bin/oas doctor -config ./oas.json
+./bin/oas daemon stop -config ./oas.json
+```
+
+### 9. Run operational checks
 
 ```bash
 oas doctor -config ./oas.json
@@ -210,7 +285,7 @@ oas doctor -config ./oas.json -json
 `oas doctor` prints a readable table by default and supports `-json` for
 automation.
 
-### 8. Replay when you want to re-deliver ledger history
+### 10. Replay when you want to re-deliver ledger history
 
 ```bash
 oas replay -config ./oas.json
@@ -228,11 +303,15 @@ Notes:
 - `oas <command> --help` is intended to be the primary discovery surface for common and advanced usage.
 - `sqlite` is replay-safe by default because it converges by `event_id`.
 - `jsonl` is an append-only delivery sink, so replay will duplicate lines if you explicitly include it.
+- `s3` is also append-only by default; use deterministic keys and expect replay to stay disabled unless you explicitly opt in.
+- `http`, `command`, `external`, and `webhook` are side-effecting delivery sinks and are skipped by default during replay.
 - `export` is the deterministic way to produce a JSONL snapshot from the ledger for review or downstream tooling.
 - `max_storage_bytes` lets the daemon enforce a storage budget for its managed files.
   When usage exceeds the budget, OAS prunes safely delivered ledger rows, compacts the
   SQLite stores, and exits loudly if it still cannot get back under the configured limit.
 - Before handing OAS to an early adopter, read [`docs/adoption/early-adopters.md`](docs/adoption/early-adopters.md) for current guardrails and evaluation expectations.
+- For remote sink setup and validation, read [`docs/adoption/remote-destinations.md`](docs/adoption/remote-destinations.md).
+- For multi-machine rollout and service management, read [`docs/adoption/multi-machine.md`](docs/adoption/multi-machine.md).
 
 ## Extending OAS
 
@@ -241,13 +320,16 @@ If you want to build a third-party adapter or sink, start with:
 - [`docs/integrations/README.md`](docs/integrations/README.md)
 - [`docs/governance/compatibility-matrix.md`](docs/governance/compatibility-matrix.md)
 
-Today the public contracts are ready for authoring against `/pkg`, but the
-stock CLI still wires only the built-in types. In practice, that means:
+Today the public contracts are ready for authoring against `/pkg`, and the
+stock CLI supports built-in sinks plus out-of-process `external` sinks. In
+practice, that means:
 
-- upstream an adapter or sink here if you want it available in the stock `oas`
-  CLI, or
-- maintain a small custom CLI overlay if you want to move faster against the
-  published contracts before plugin loading exists in the stock runtime
+- upstream an adapter or built-in sink here if you want it available in the
+  stock `oas` CLI for everyone,
+- ship an external sink executable if you want a proprietary or unbundled
+  destination without forking the runtime, or
+- maintain a custom CLI overlay when you need a custom source adapter or a
+  deeper runtime change than the published sink/runtime contracts cover
 
 See [`docs/integrations/README.md`](docs/integrations/README.md) and
 [`rfcs/0002-external-plugin-runtime.md`](rfcs/0002-external-plugin-runtime.md)

@@ -12,22 +12,29 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/open-agent-stream/open-agent-stream/internal/analytics"
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
+	"github.com/open-agent-stream/open-agent-stream/internal/delivery"
+	"github.com/open-agent-stream/open-agent-stream/internal/eventspec"
 	"github.com/open-agent-stream/open-agent-stream/internal/health"
 	"github.com/open-agent-stream/open-agent-stream/internal/ledger"
 	"github.com/open-agent-stream/open-agent-stream/internal/normalize"
 	"github.com/open-agent-stream/open-agent-stream/internal/redact"
 	"github.com/open-agent-stream/open-agent-stream/internal/router"
 	"github.com/open-agent-stream/open-agent-stream/internal/sinkmeta"
+	"github.com/open-agent-stream/open-agent-stream/internal/sinkutil"
 	"github.com/open-agent-stream/open-agent-stream/internal/state"
 	"github.com/open-agent-stream/open-agent-stream/internal/storageguard"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sinkapi"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
+	commandsink "github.com/open-agent-stream/open-agent-stream/sinks/command"
+	externalsink "github.com/open-agent-stream/open-agent-stream/sinks/external"
+	httpsink "github.com/open-agent-stream/open-agent-stream/sinks/http"
 	jsonlsink "github.com/open-agent-stream/open-agent-stream/sinks/jsonl"
+	s3sink "github.com/open-agent-stream/open-agent-stream/sinks/s3"
 	sqlitesink "github.com/open-agent-stream/open-agent-stream/sinks/sqlite"
 	stdoutsink "github.com/open-agent-stream/open-agent-stream/sinks/stdout"
-	webhooksink "github.com/open-agent-stream/open-agent-stream/sinks/webhook"
 	claudesource "github.com/open-agent-stream/open-agent-stream/sources/claude"
 	codexsource "github.com/open-agent-stream/open-agent-stream/sources/codex"
 )
@@ -39,6 +46,7 @@ type Runtime struct {
 	state       *state.Store
 	ledger      *ledger.Store
 	normalizer  *normalize.Service
+	delivery    *delivery.Manager
 	router      *router.Router
 	adapters    map[string]sourceapi.Adapter
 	storage     *storageguard.Guard
@@ -48,6 +56,10 @@ type Runtime struct {
 type ReplayOptions struct {
 	SinkIDs              []string
 	IncludeNonIdempotent bool
+}
+
+type ExportOptions struct {
+	EventSpecVersion string
 }
 
 type ReplayPlan struct {
@@ -89,6 +101,7 @@ func New(cfg config.Config) (*Runtime, error) {
 		_ = stateStore.Close()
 		return nil, err
 	}
+	redactor := redact.NewEngine(cfg)
 	return &Runtime{
 		cfg:        cfg,
 		sinks:      sinks,
@@ -96,7 +109,8 @@ func New(cfg config.Config) (*Runtime, error) {
 		state:      stateStore,
 		ledger:     ledgerStore,
 		normalizer: normalize.NewService(stateStore),
-		router:     router.New(sinks, stateStore, redact.NewEngine(cfg)),
+		delivery:   delivery.New(cfg, sinks, stateStore, redactor),
+		router:     router.New(cfg.Sinks, sinks, stateStore, redactor),
 		storage:    storageguard.New(cfg, ledgerStore, stateStore),
 		adapters: map[string]sourceapi.Adapter{
 			"codex_local":  codexsource.New(),
@@ -226,7 +240,6 @@ func (r *Runtime) RunCycle(ctx context.Context) (CycleResult, error) {
 	if err := r.init(ctx); err != nil {
 		return CycleResult{}, err
 	}
-	_ = r.router.DrainRetries(ctx)
 	ingested, ingestErr := r.ingestSources(ctx)
 	delivered, processErr := r.processLedger(ctx, false)
 	result := CycleResult{EnvelopesIngested: ingested, EventsDelivered: delivered}
@@ -257,7 +270,16 @@ func (r *Runtime) ReplayWithOptions(ctx context.Context, options ReplayOptions) 
 		}
 		return fmt.Errorf("replay selected no eligible sinks; blocked by replay safety defaults: %s (rerun with --include-non-idempotent to include append-only and side-effecting sinks)", strings.Join(blocked, ", "))
 	}
-	replayRouter := router.New(selectedSinks, r.state, redact.NewEngine(r.cfg))
+	selectedConfigs := make([]sinkapi.Config, 0, len(selectedSinks))
+	for _, sink := range selectedSinks {
+		for _, sinkCfg := range r.cfg.Sinks {
+			if sinkCfg.ID == sink.ID() {
+				selectedConfigs = append(selectedConfigs, sinkCfg)
+				break
+			}
+		}
+	}
+	replayRouter := router.New(selectedConfigs, selectedSinks, r.state, redact.NewEngine(r.cfg))
 	if err := replayRouter.Init(ctx); err != nil {
 		return err
 	}
@@ -272,10 +294,18 @@ func (r *Runtime) ReplayWithOptions(ctx context.Context, options ReplayOptions) 
 }
 
 func (r *Runtime) Export(ctx context.Context, writer io.Writer) error {
+	return r.ExportWithOptions(ctx, writer, ExportOptions{})
+}
+
+func (r *Runtime) ExportWithOptions(ctx context.Context, writer io.Writer, options ExportOptions) error {
 	exportNormalizer := normalize.NewService(normalize.NewMemorySequenceStore())
 	encoder := json.NewEncoder(writer)
 	_, err := r.streamLedger(ctx, exportNormalizer, 0, func(_ int64, batch sinkapi.Batch) error {
-		for _, event := range batch.Events {
+		versioned, err := eventspec.Batch(batch, config.EffectiveSinkEventSpecVersion(options.EventSpecVersion))
+		if err != nil {
+			return err
+		}
+		for _, event := range versioned.Events {
 			if err := encoder.Encode(event); err != nil {
 				return err
 			}
@@ -290,6 +320,10 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 		health.CheckWritablePath(ctx, "state_path", r.cfg.StatePath),
 		health.CheckWritablePath(ctx, "ledger_path", r.cfg.LedgerPath),
 	}
+	deliveryStatus, err := r.delivery.DeliveryStatus(time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
 	for _, source := range r.cfg.Sources {
 		checks = append(checks, health.CheckReadablePath(ctx, "source:"+source.InstanceID, source.Root))
 	}
@@ -299,14 +333,42 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 		if sinkmeta.DefaultReplayAllowed(info.ReplayClass) {
 			defaultReplay = "include"
 		}
+		detail := fmt.Sprintf("type=%s replay_class=%s default_replay=%s", sinkCfg.Type, info.ReplayClass, defaultReplay)
+		if summary, ok := deliveryStatus[sinkCfg.ID]; ok {
+			detail += fmt.Sprintf(" queue_depth=%d ready_batches=%d retrying_batches=%d quarantined_batches=%d acked_offset=%d terminal_offset=%d gaps=%d",
+				summary.Summary.QueueDepth,
+				summary.Summary.ReadyBatchCount,
+				summary.Summary.RetryingBatchCount,
+				summary.Summary.QuarantinedBatchCount,
+				summary.Summary.AckedContiguousOffset,
+				summary.Summary.TerminalContiguousOffset,
+				summary.Summary.GapCount,
+			)
+			if summary.Summary.LastTerminalError != "" {
+				detail += fmt.Sprintf(" last_terminal_error=%q", summary.Summary.LastTerminalError)
+			}
+		}
 		checks = append(checks, health.Check{
 			Name:   "sink:" + sinkCfg.ID,
 			Status: "ok",
-			Detail: fmt.Sprintf("type=%s replay_class=%s default_replay=%s", sinkCfg.Type, info.ReplayClass, defaultReplay),
+			Detail: detail,
 		})
 		if path := sinkCfg.Options["path"]; path != "" {
 			checks = append(checks, health.CheckWritablePath(ctx, "sink-path:"+sinkCfg.ID, path))
 		}
+	}
+	for idx, sink := range r.sinks {
+		sinkCfg := r.cfg.Sinks[idx]
+		healthCheck := health.Check{
+			Name:   "sink-health:" + sinkCfg.ID,
+			Status: "ok",
+			Detail: sinkHealthTarget(sinkCfg),
+		}
+		if err := sink.Health(ctx); err != nil {
+			healthCheck.Status = "fail"
+			healthCheck.Detail = err.Error()
+		}
+		checks = append(checks, healthCheck)
 	}
 	if r.storage != nil {
 		report, err := r.storage.Inspect()
@@ -359,6 +421,9 @@ func (r *Runtime) init(ctx context.Context) error {
 	if err := r.router.Init(ctx); err != nil {
 		return err
 	}
+	if err := r.delivery.Init(); err != nil {
+		return err
+	}
 	r.initialized = true
 	return nil
 }
@@ -396,6 +461,17 @@ func (r *Runtime) ingestSources(ctx context.Context) (int, error) {
 				continue
 			}
 			for _, envelope := range envelopes {
+				machineID, err := config.EffectiveMachineID(envelope.MachineID, r.cfg.MachineID)
+				if err != nil {
+					_ = r.state.RecordDeadLetter("source_machine_id", artifact.Locator, err.Error(), map[string]any{
+						"source_id":           sourceCfg.InstanceID,
+						"artifact_id":         artifact.ID,
+						"captured_machine_id": envelope.MachineID,
+						"config_machine_id":   r.cfg.MachineID,
+					})
+					return total, fmt.Errorf("machine identity mismatch for %s/%s: %w", sourceCfg.InstanceID, artifact.ID, err)
+				}
+				envelope.MachineID = machineID
 				if _, err := r.ledger.Append(envelope); err != nil {
 					return total, err
 				}
@@ -418,12 +494,17 @@ func (r *Runtime) processLedger(ctx context.Context, replay bool) (int, error) {
 	if replay {
 		startOffset = 0
 	}
-	return r.streamLedger(ctx, r.normalizer, startOffset, func(offset int64, batch sinkapi.Batch) error {
-		if err := r.router.Route(ctx, batch, offset, offset); err != nil {
-			_ = r.state.RecordDeadLetter("sink_delivery", filepath.Base(r.cfg.StatePath), err.Error(), batch)
+	_, streamErr := r.streamLedger(ctx, r.normalizer, startOffset, func(offset int64, batch sinkapi.Batch) error {
+		if err := r.delivery.PrepareBatch(ctx, batch, offset); err != nil {
+			return err
 		}
 		return r.state.SetNormalizationOffset(offsetName, offset)
 	})
+	delivered, dispatchErr := r.delivery.DispatchDue(ctx)
+	if streamErr != nil || dispatchErr != nil {
+		return delivered, errors.Join(streamErr, dispatchErr)
+	}
+	return delivered, nil
 }
 
 func (r *Runtime) streamLedger(ctx context.Context, normalizer *normalize.Service, after int64, consumer func(offset int64, batch sinkapi.Batch) error) (int, error) {
@@ -443,6 +524,12 @@ func (r *Runtime) streamLedger(ctx context.Context, normalizer *normalize.Servic
 				return processed, ctx.Err()
 			default:
 			}
+			machineID, err := config.EffectiveMachineID(record.Envelope.MachineID, r.cfg.MachineID)
+			if err != nil {
+				_ = r.state.RecordDeadLetter("machine_id", record.Envelope.EnvelopeID, err.Error(), record.Envelope)
+				return processed, err
+			}
+			record.Envelope.MachineID = machineID
 			event, err := normalizer.Normalize(record)
 			if err != nil {
 				_ = r.state.RecordDeadLetter("normalize", record.Envelope.EnvelopeID, err.Error(), record.Envelope)
@@ -474,8 +561,27 @@ func buildSinks(configs []sinkapi.Config) ([]sinkapi.Sink, map[string]sinkmeta.I
 			sink = jsonlsink.New(cfg)
 		case "sqlite":
 			sink = sqlitesink.New(cfg)
+		case "http":
+			sink = httpsink.New(cfg)
+		case "s3":
+			sink = s3sink.New(cfg)
+		case "command":
+			sink = commandsink.New(cfg)
+		case "external":
+			sink = externalsink.New(cfg)
 		case "webhook":
-			sink = webhooksink.New(cfg)
+			translated := cfg
+			translated.Type = "http"
+			if translated.Settings == nil {
+				translated.Settings = map[string]any{}
+			}
+			if _, ok := translated.Settings["method"]; !ok {
+				translated.Settings["method"] = "POST"
+			}
+			if _, ok := translated.Settings["format"]; !ok {
+				translated.Settings["format"] = "oas_batch_json"
+			}
+			sink = httpsink.New(translated)
 		default:
 			return nil, nil, errors.New("unknown sink type: " + cfg.Type)
 		}
@@ -512,6 +618,37 @@ func waitForNextCycle(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
+	}
+}
+
+func sinkHealthTarget(cfg sinkapi.Config) string {
+	switch cfg.Type {
+	case "command":
+		argv := sinkutil.StringSlice(cfg, "argv")
+		if len(argv) == 0 {
+			return "settings.argv is required"
+		}
+		return strings.Join(argv, " ")
+	case "http", "webhook":
+		return sinkutil.String(cfg, "url")
+	case "s3":
+		bucket := sinkutil.String(cfg, "bucket")
+		if prefix := sinkutil.String(cfg, "prefix"); prefix != "" {
+			return bucket + "/" + prefix
+		}
+		return bucket
+	case "external":
+		pluginType := sinkutil.String(cfg, "plugin_type")
+		argv := sinkutil.StringSlice(cfg, "argv")
+		if len(argv) == 0 {
+			return pluginType
+		}
+		if pluginType == "" {
+			return strings.Join(argv, " ")
+		}
+		return pluginType + " via " + argv[0]
+	default:
+		return cfg.Type
 	}
 }
 
@@ -598,4 +735,8 @@ func normalizeSinkIDs(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func (r *Runtime) Analytics() *analytics.Service {
+	return analytics.New(r.cfg, r.ledger)
 }

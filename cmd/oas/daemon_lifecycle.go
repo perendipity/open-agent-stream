@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
+	"github.com/open-agent-stream/open-agent-stream/internal/state"
 	"github.com/open-agent-stream/open-agent-stream/internal/storageguard"
 	"github.com/open-agent-stream/open-agent-stream/internal/supervisor"
 )
@@ -114,28 +115,53 @@ type daemonStorageActivity struct {
 }
 
 type daemonStatusView struct {
-	SchemaVersion          int                  `json:"schema_version,omitempty"`
-	InstanceID             string               `json:"instance_id,omitempty"`
-	State                  string               `json:"state"`
-	Running                bool                 `json:"running"`
-	Live                   bool                 `json:"live"`
-	Ready                  bool                 `json:"ready"`
-	Stale                  bool                 `json:"stale,omitempty"`
-	HeartbeatFresh         bool                 `json:"heartbeat_fresh,omitempty"`
-	StatusReason           string               `json:"status_reason,omitempty"`
-	StalePID               bool                 `json:"stale_pid,omitempty"`
-	PID                    int                  `json:"pid,omitempty"`
-	StartedAt              string               `json:"started_at,omitempty"`
-	ReadyAt                string               `json:"ready_at,omitempty"`
-	HeartbeatAt            string               `json:"heartbeat_at,omitempty"`
-	LastTransitionAt       string               `json:"last_transition_at,omitempty"`
-	LastError              string               `json:"last_error,omitempty"`
-	LastProcessedRequestID string               `json:"last_processed_request_id,omitempty"`
-	LastControlAction      string               `json:"last_control_action,omitempty"`
-	Runtime                daemonRuntimeStatus  `json:"runtime"`
-	Paths                  daemonResolvedPaths  `json:"paths"`
-	Storage                *daemonStorageStatus `json:"storage,omitempty"`
-	StorageError           string               `json:"storage_error,omitempty"`
+	SchemaVersion          int                    `json:"schema_version,omitempty"`
+	InstanceID             string                 `json:"instance_id,omitempty"`
+	State                  string                 `json:"state"`
+	Running                bool                   `json:"running"`
+	Live                   bool                   `json:"live"`
+	Ready                  bool                   `json:"ready"`
+	Stale                  bool                   `json:"stale,omitempty"`
+	HeartbeatFresh         bool                   `json:"heartbeat_fresh,omitempty"`
+	StatusReason           string                 `json:"status_reason,omitempty"`
+	StalePID               bool                   `json:"stale_pid,omitempty"`
+	PID                    int                    `json:"pid,omitempty"`
+	StartedAt              string                 `json:"started_at,omitempty"`
+	ReadyAt                string                 `json:"ready_at,omitempty"`
+	HeartbeatAt            string                 `json:"heartbeat_at,omitempty"`
+	LastTransitionAt       string                 `json:"last_transition_at,omitempty"`
+	LastError              string                 `json:"last_error,omitempty"`
+	LastProcessedRequestID string                 `json:"last_processed_request_id,omitempty"`
+	LastControlAction      string                 `json:"last_control_action,omitempty"`
+	Runtime                daemonRuntimeStatus    `json:"runtime"`
+	Paths                  daemonResolvedPaths    `json:"paths"`
+	Storage                *daemonStorageStatus   `json:"storage,omitempty"`
+	Delivery               []daemonDeliveryStatus `json:"delivery,omitempty"`
+	DeliveryError          string                 `json:"delivery_error,omitempty"`
+	StorageError           string                 `json:"storage_error,omitempty"`
+}
+
+type daemonDeliveryStatus struct {
+	SinkID                   string  `json:"sink_id"`
+	QueueDepth               int     `json:"queue_depth"`
+	ReadyBatchCount          int     `json:"ready_batch_count"`
+	RetryingBatchCount       int     `json:"retrying_batch_count"`
+	QuarantinedBatchCount    int     `json:"quarantined_batch_count"`
+	OldestPendingAt          string  `json:"oldest_pending_at,omitempty"`
+	NextAttemptAt            string  `json:"next_attempt_at,omitempty"`
+	AckedContiguousOffset    int64   `json:"acked_contiguous_offset"`
+	TerminalContiguousOffset int64   `json:"terminal_contiguous_offset"`
+	GapCount                 int     `json:"gap_count"`
+	SuccessfulBatches        int     `json:"successful_batches"`
+	SuccessfulEvents         int     `json:"successful_events"`
+	FailedAttempts           int     `json:"failed_attempts"`
+	QuarantinedBatches       int     `json:"quarantined_batches"`
+	LastTerminalError        string  `json:"last_terminal_error,omitempty"`
+	EventsLastMinute         int     `json:"events_last_minute"`
+	AttemptsLastMinute       int     `json:"attempts_last_minute"`
+	SuccessesLastMinute      int     `json:"successes_last_minute"`
+	AvgBatchEventsLastMinute float64 `json:"avg_batch_events_last_minute,omitempty"`
+	MaxBatchEventsLastMinute int     `json:"max_batch_events_last_minute,omitempty"`
 }
 
 type daemonRuntimeStatus struct {
@@ -305,7 +331,8 @@ Show daemon/runtime status, resolved paths, and storage activity.
 		fatal(err)
 	}
 	storageStatus, storageErr := daemonStorageStatusFor(cfg, paths.logPath)
-	view := buildDaemonStatusView(absConfigPath, cfg, paths, snapshot, storageStatus, storageErr)
+	deliveryStatus, deliveryErr := daemonDeliveryStatusFor(cfg)
+	view := buildDaemonStatusView(absConfigPath, cfg, paths, snapshot, storageStatus, storageErr, deliveryStatus, deliveryErr)
 	if *asJSON {
 		if err := writeJSON(os.Stdout, view); err != nil {
 			fatal(err)
@@ -747,7 +774,7 @@ func deriveDaemonStatusSnapshot(snapshot *daemonStatusSnapshot, now time.Time) {
 	}
 }
 
-func buildDaemonStatusView(configPath string, cfg config.Config, paths daemonPaths, snapshot daemonStatusSnapshot, storageStatus daemonStorageStatus, storageErr error) daemonStatusView {
+func buildDaemonStatusView(configPath string, cfg config.Config, paths daemonPaths, snapshot daemonStatusSnapshot, storageStatus daemonStorageStatus, storageErr error, deliveryStatus []daemonDeliveryStatus, deliveryErr error) daemonStatusView {
 	record := snapshot.Record
 	state := daemonStateStopped
 	if snapshot.HasRecord && snapshot.RecordErr == nil && daemonStateKnown(record.State) {
@@ -790,12 +817,16 @@ func buildDaemonStatusView(configPath string, cfg config.Config, paths daemonPat
 			LockPath:       absolutePathOrValue(paths.lockPath),
 			ControlDirPath: absolutePathOrValue(paths.controlDirPath),
 		},
+		Delivery: deliveryStatus,
 	}
 	if storageErr != nil {
 		view.StorageError = storageErr.Error()
 	} else {
 		copy := storageStatus
 		view.Storage = &copy
+	}
+	if deliveryErr != nil {
+		view.DeliveryError = deliveryErr.Error()
 	}
 	return view
 }
@@ -864,6 +895,30 @@ func writeDaemonStatusReport(writer io.Writer, view daemonStatusView) error {
 				[2]string{"Safe prune offset", int64String(view.Storage.LastActivity.SafePruneOffset)},
 			)
 		}
+	}
+	if len(view.Delivery) > 0 {
+		b.WriteString("Delivery:\n")
+		for _, status := range view.Delivery {
+			fmt.Fprintf(&b, "  - %s: queue=%d ready=%d retrying=%d quarantined=%d acked=%d terminal=%d gaps=%d\n",
+				status.SinkID,
+				status.QueueDepth,
+				status.ReadyBatchCount,
+				status.RetryingBatchCount,
+				status.QuarantinedBatchCount,
+				status.AckedContiguousOffset,
+				status.TerminalContiguousOffset,
+				status.GapCount,
+			)
+			if status.LastTerminalError != "" {
+				fmt.Fprintf(&b, "    last_terminal_error: %s\n", status.LastTerminalError)
+			}
+		}
+		b.WriteString("\n")
+	}
+	if view.DeliveryError != "" {
+		appendKeyValueSection(&b, "Delivery error",
+			[2]string{"Error", view.DeliveryError},
+		)
 	}
 	_, err := io.WriteString(writer, strings.TrimRight(b.String(), "\n")+"\n")
 	return err
@@ -951,6 +1006,51 @@ func daemonStorageStatusFor(cfg config.Config, logPath string) (daemonStorageSta
 	}
 	status.LastActivity = activity
 	return status, nil
+}
+
+func daemonDeliveryStatusFor(cfg config.Config) ([]daemonDeliveryStatus, error) {
+	store, err := state.Open(cfg.StatePath)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+
+	statuses := make([]daemonDeliveryStatus, 0, len(cfg.Sinks))
+	now := time.Now().UTC()
+	for _, sinkCfg := range cfg.Sinks {
+		summary, err := store.DeliverySummary(sinkCfg.ID, now)
+		if err != nil {
+			return nil, err
+		}
+		status := daemonDeliveryStatus{
+			SinkID:                   summary.SinkID,
+			QueueDepth:               summary.QueueDepth,
+			ReadyBatchCount:          summary.ReadyBatchCount,
+			RetryingBatchCount:       summary.RetryingBatchCount,
+			QuarantinedBatchCount:    summary.QuarantinedBatchCount,
+			AckedContiguousOffset:    summary.AckedContiguousOffset,
+			TerminalContiguousOffset: summary.TerminalContiguousOffset,
+			GapCount:                 summary.GapCount,
+			SuccessfulBatches:        summary.SuccessfulBatches,
+			SuccessfulEvents:         summary.SuccessfulEvents,
+			FailedAttempts:           summary.FailedAttempts,
+			QuarantinedBatches:       summary.QuarantinedBatches,
+			LastTerminalError:        summary.LastTerminalError,
+			EventsLastMinute:         summary.EventsLastMinute,
+			AttemptsLastMinute:       summary.AttemptsLastMinute,
+			SuccessesLastMinute:      summary.SuccessesLastMinute,
+			AvgBatchEventsLastMinute: summary.AvgBatchEventsLastMinute,
+			MaxBatchEventsLastMinute: summary.MaxBatchEventsLastMinute,
+		}
+		if !summary.OldestPendingAt.IsZero() {
+			status.OldestPendingAt = summary.OldestPendingAt.Format(time.RFC3339Nano)
+		}
+		if !summary.NextAttemptAt.IsZero() {
+			status.NextAttemptAt = summary.NextAttemptAt.Format(time.RFC3339Nano)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
 }
 
 func readLastStorageActivity(logPath string) (*daemonStorageActivity, error) {

@@ -12,6 +12,8 @@ OAS is in good shape for:
 - deterministic export to JSONL for review and downstream tooling
 - reviewer-oriented session triage with `oas summary` and `oas inspect`
 - continuous collection with daemon mode and storage-budget visibility
+- remote delivery through the built-in `http`, `command`, and `s3` sinks when
+  you want near-real-time forwarding or scheduled batch release
 
 ## What is still intentionally early
 
@@ -95,6 +97,8 @@ portable there.
 
 - start with local test artifacts or a small non-sensitive workspace first
 - keep off-machine sinks disabled until you review the configured privacy policy
+- use [`remote-destinations.md`](remote-destinations.md) for first-run remote
+  sink setup and local validation before pointing OAS at a real external system
 - remember that replay-safe sinks are included by default, but append-only sinks
   like JSONL will duplicate output if you explicitly replay to them
 - set a `max_storage_bytes` budget if you want the daemon to enforce a hard cap

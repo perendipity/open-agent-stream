@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-agent-stream.dev/spec/session-model/v2/schema.json",
+  "title": "SessionIdentity",
+  "type": "object",
+  "required": [
+    "session_key",
+    "source_type",
+    "source_instance_id",
+    "source_session_key",
+    "machine_id"
+  ],
+  "properties": {
+    "session_key": { "type": "string" },
+    "source_type": { "type": "string" },
+    "source_instance_id": { "type": "string" },
+    "source_session_key": { "type": "string" },
+    "project_key": { "type": "string" },
+    "machine_id": { "type": "string" }
+  },
+  "additionalProperties": false
+}

@@ -95,12 +95,12 @@ func (g *Guard) Enforce(_ context.Context, normalizationOffset int64) (Report, e
 
 	report.Enforced = true
 
-	minSinkOffset, ok, err := g.state.MinimumSinkCheckpointOffset()
+	minSinkOffset, ok, err := g.state.MinimumSinkTerminalOffset()
 	if err != nil {
 		return report, err
 	}
 	if !ok {
-		return report, fmt.Errorf("storage budget exceeded but no sink checkpoints exist yet; cannot prune safely")
+		return report, fmt.Errorf("storage budget exceeded but no sink terminal offsets exist yet; cannot prune safely")
 	}
 
 	safeOffset := normalizationOffset

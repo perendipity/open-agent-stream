@@ -13,8 +13,10 @@ Read the repo in this order:
 9. [`governance/cli-standards.md`](governance/cli-standards.md)
 10. [`roadmap/cli-usability.md`](roadmap/cli-usability.md)
 11. [`adoption/install.md`](adoption/install.md)
-12. [`adoption/early-adopters.md`](adoption/early-adopters.md)
-13. [`roadmap/milestones.md`](roadmap/milestones.md)
+12. [`adoption/remote-destinations.md`](adoption/remote-destinations.md)
+13. [`adoption/multi-machine.md`](adoption/multi-machine.md)
+14. [`adoption/early-adopters.md`](adoption/early-adopters.md)
+15. [`roadmap/milestones.md`](roadmap/milestones.md)
 
 ## Structure
 
@@ -23,4 +25,5 @@ Read the repo in this order:
 - `/governance`: how the standard evolves
 - `/integrations`: third-party adapter/sink authoring guidance
 - `/adoption`: install guidance and early-adopter operating notes
+- `/packaging`: service templates for released binaries
 - `/roadmap`: release framing and adoption criteria

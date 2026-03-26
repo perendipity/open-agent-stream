@@ -31,6 +31,17 @@ func NewService(sequences SequenceStore) *Service {
 	}
 }
 
+func (s *Service) SeedCallName(callID, toolName string) {
+	callID = strings.TrimSpace(callID)
+	toolName = strings.TrimSpace(toolName)
+	if callID == "" || toolName == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.callNames[callID] = toolName
+}
+
 func (s *Service) Normalize(record ledger.Record) (schema.CanonicalEvent, error) {
 	envelope := schema.EnsureEnvelopeID(record.Envelope)
 	payload, parseErr := decodePayload(envelope.RawPayload)
@@ -43,7 +54,7 @@ func (s *Service) Normalize(record ledger.Record) (schema.CanonicalEvent, error)
 	if sessionSourceKey == "" {
 		sessionSourceKey = "unknown"
 	}
-	sessionKey := schema.StableSessionKey(envelope.SourceInstanceID, sessionSourceKey)
+	sessionKey := schema.StableSessionKeyForVersion(schema.EventSpecV1, "", envelope.SourceInstanceID, sessionSourceKey)
 	sequence, err := s.nextSequence(sessionKey)
 	if err != nil {
 		return schema.CanonicalEvent{}, err
@@ -61,7 +72,7 @@ func (s *Service) Normalize(record ledger.Record) (schema.CanonicalEvent, error)
 	}
 	kind, actor, parseStatus, payloadMap := s.classify(envelope, payload, parseErr)
 	event := schema.CanonicalEvent{
-		EventVersion:     schema.CanonicalEventVersion,
+		EventVersion:     schema.CanonicalEventVersionV1,
 		SourceType:       envelope.SourceType,
 		SourceInstanceID: envelope.SourceInstanceID,
 		SessionKey:       sessionKey,

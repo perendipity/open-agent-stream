@@ -14,6 +14,13 @@ import (
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
 )
 
+const (
+	defaultDeliveryRetryInitialBackoff = 10 * time.Second
+	defaultDeliveryRetryMaxBackoff     = 5 * time.Minute
+	defaultPoisonAfterFailures         = 20
+	maxDeliveryBatchEvents             = 1000
+)
+
 type RegexRule struct {
 	Pattern     string `json:"pattern"`
 	Replacement string `json:"replacement"`
@@ -72,6 +79,9 @@ func Load(path string) (Config, error) {
 
 func Validate(cfg Config) error {
 	var errs []error
+	if strings.TrimSpace(cfg.MachineID) == "" {
+		errs = append(errs, errors.New("machine_id: is required"))
+	}
 	if _, err := cfg.PollIntervalValue(); err != nil {
 		errs = append(errs, fmt.Errorf("poll_interval: %w", err))
 	}
@@ -113,6 +123,12 @@ func Validate(cfg Config) error {
 		}
 		if sink.Type == "" {
 			errs = append(errs, fmt.Errorf("sinks[%d].type: is required", i))
+		}
+		if normalized := schema.NormalizeEventSpecVersion(EffectiveSinkEventSpecVersion(sink.EventSpecVersion)); normalized == "" {
+			errs = append(errs, fmt.Errorf("sinks[%d].event_spec_version: must be %q or %q", i, schema.EventSpecV1, schema.EventSpecV2))
+		}
+		if err := validateDeliveryConfig(sink.Delivery); err != nil {
+			errs = append(errs, fmt.Errorf("sinks[%d].delivery: %w", i, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -191,6 +207,13 @@ func applyDefaults(cfg *Config, raw map[string]json.RawMessage) {
 	if cfg.Privacy.PerSink == nil {
 		cfg.Privacy.PerSink = map[string]Policy{}
 	}
+	for i := range cfg.Sinks {
+		applyDeliveryDefaults(&cfg.Sinks[i].Delivery)
+		if cfg.Sinks[i].Settings == nil {
+			cfg.Sinks[i].Settings = map[string]any{}
+		}
+		cfg.Sinks[i].EventSpecVersion = EffectiveSinkEventSpecVersion(cfg.Sinks[i].EventSpecVersion)
+	}
 }
 
 func (cfg Config) PollIntervalValue() (time.Duration, error) {
@@ -235,6 +258,68 @@ func (cfg Config) MinFreeBytesValue() (int64, error) {
 	return cfg.MinFreeBytes, nil
 }
 
+func validateDeliveryConfig(cfg sinkapi.DeliveryConfig) error {
+	var errs []error
+	if cfg.MaxBatchEvents < 1 || cfg.MaxBatchEvents > maxDeliveryBatchEvents {
+		errs = append(errs, fmt.Errorf("max_batch_events: must be between 1 and %d", maxDeliveryBatchEvents))
+	}
+	if cfg.MaxBatchBytes < 0 {
+		errs = append(errs, errors.New("max_batch_bytes: must be zero or greater"))
+	}
+	if _, err := parsePositiveDuration(cfg.RetryInitialBackoff, defaultDeliveryRetryInitialBackoff); err != nil {
+		errs = append(errs, fmt.Errorf("retry_initial_backoff: %w", err))
+	}
+	if _, err := parsePositiveDuration(cfg.RetryMaxBackoff, defaultDeliveryRetryMaxBackoff); err != nil {
+		errs = append(errs, fmt.Errorf("retry_max_backoff: %w", err))
+	}
+	maxBatchAge, err := parseOptionalPositiveDuration(cfg.MaxBatchAge)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("max_batch_age: %w", err))
+	}
+	windowEvery, err := parseOptionalPositiveDuration(cfg.WindowEvery)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("window_every: %w", err))
+	}
+	windowOffset, err := parseOptionalNonNegativeDuration(cfg.WindowOffset)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("window_offset: %w", err))
+	}
+	if cfg.MaxAttempts < 0 {
+		errs = append(errs, errors.New("max_attempts: must be zero or greater"))
+	}
+	if cfg.PoisonAfterFailures < 0 {
+		errs = append(errs, errors.New("poison_after_failures: must be zero or greater"))
+	}
+	if windowEvery == 0 && windowOffset > 0 {
+		errs = append(errs, errors.New("window_offset: requires window_every to be set"))
+	}
+	if windowEvery > 0 && windowOffset >= windowEvery {
+		errs = append(errs, errors.New("window_offset: must be smaller than window_every"))
+	}
+	if cfg.MaxBatchBytes == 0 && maxBatchAge == 0 && cfg.MaxBatchEvents <= 0 {
+		errs = append(errs, errors.New("at least one batch trigger must be configured"))
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func applyDeliveryDefaults(cfg *sinkapi.DeliveryConfig) {
+	if cfg.MaxBatchEvents <= 0 {
+		cfg.MaxBatchEvents = 1
+	}
+	if cfg.RetryInitialBackoff == "" {
+		cfg.RetryInitialBackoff = defaultDeliveryRetryInitialBackoff.String()
+	}
+	if cfg.RetryMaxBackoff == "" {
+		cfg.RetryMaxBackoff = defaultDeliveryRetryMaxBackoff.String()
+	}
+	if cfg.PoisonAfterFailures <= 0 {
+		cfg.PoisonAfterFailures = defaultPoisonAfterFailures
+	}
+}
+
 func parsePositiveDuration(raw string, fallback time.Duration) (time.Duration, error) {
 	if raw == "" {
 		return fallback, nil
@@ -245,6 +330,27 @@ func parsePositiveDuration(raw string, fallback time.Duration) (time.Duration, e
 	}
 	if value <= 0 {
 		return 0, errors.New("must be greater than zero")
+	}
+	return value, nil
+}
+
+func parseOptionalPositiveDuration(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	return parsePositiveDuration(raw, 0)
+}
+
+func parseOptionalNonNegativeDuration(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, err
+	}
+	if value < 0 {
+		return 0, errors.New("must be zero or greater")
 	}
 	return value, nil
 }

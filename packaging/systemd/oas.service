@@ -1,0 +1,19 @@
+[Unit]
+Description=Open Agent Stream daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/oas daemon run -config /etc/oas/oas.json
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=-/etc/oas/oas.env
+WorkingDirectory=/var/lib/oas
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/oas
+
+[Install]
+WantedBy=multi-user.target

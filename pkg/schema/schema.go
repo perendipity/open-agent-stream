@@ -10,8 +10,12 @@ import (
 )
 
 const (
-	RawEnvelopeVersion    = 1
-	CanonicalEventVersion = 1
+	RawEnvelopeVersion      = 1
+	CanonicalEventVersionV1 = 1
+	CanonicalEventVersionV2 = 2
+	CanonicalEventVersion   = CanonicalEventVersionV1
+	EventSpecV1             = "v1"
+	EventSpecV2             = "v2"
 )
 
 type Cursor struct {
@@ -68,6 +72,7 @@ type CanonicalEvent struct {
 	EventID          string         `json:"event_id"`
 	SourceType       string         `json:"source_type"`
 	SourceInstanceID string         `json:"source_instance_id"`
+	MachineID        string         `json:"machine_id,omitempty"`
 	SessionKey       string         `json:"session_key"`
 	Sequence         int            `json:"sequence"`
 	Timestamp        time.Time      `json:"timestamp"`
@@ -125,12 +130,21 @@ func EnsureEventID(event CanonicalEvent) CanonicalEvent {
 	if event.EventID != "" {
 		return event
 	}
-	event.EventID = StableEventID(event)
+	event.EventID = StableEventIDForVersion(EventSpecVersionForEvent(event), event)
 	return event
 }
 
 func StableSessionKey(sourceInstanceID, sourceSessionKey string) string {
-	return StableID("sess", sourceInstanceID, sourceSessionKey)
+	return StableSessionKeyForVersion(EventSpecV1, "", sourceInstanceID, sourceSessionKey)
+}
+
+func StableSessionKeyForVersion(version, machineID, sourceInstanceID, sourceSessionKey string) string {
+	switch NormalizeEventSpecVersion(version) {
+	case EventSpecV2:
+		return StableID("sess", machineID, sourceInstanceID, sourceSessionKey)
+	default:
+		return StableID("sess", sourceInstanceID, sourceSessionKey)
+	}
 }
 
 func StableProjectKey(projectLocator string) string {
@@ -141,17 +155,63 @@ func StableProjectKey(projectLocator string) string {
 }
 
 func StableEventID(event CanonicalEvent) string {
+	return StableEventIDForVersion(EventSpecVersionForEvent(event), event)
+}
+
+func StableEventIDForVersion(version string, event CanonicalEvent) string {
 	payloadHash := HashJSON(event.Payload)
-	return StableID(
-		"evt",
-		event.SourceType,
-		event.SourceInstanceID,
-		event.SessionKey,
-		strconvI(event.Sequence),
-		event.Kind,
-		event.Timestamp.UTC().Format(time.RFC3339Nano),
-		payloadHash,
-	)
+	switch NormalizeEventSpecVersion(version) {
+	case EventSpecV2:
+		return StableID(
+			"evt",
+			event.SourceType,
+			event.MachineID,
+			event.SourceInstanceID,
+			event.SessionKey,
+			strconvI(event.Sequence),
+			event.Kind,
+			event.Timestamp.UTC().Format(time.RFC3339Nano),
+			payloadHash,
+		)
+	default:
+		return StableID(
+			"evt",
+			event.SourceType,
+			event.SourceInstanceID,
+			event.SessionKey,
+			strconvI(event.Sequence),
+			event.Kind,
+			event.Timestamp.UTC().Format(time.RFC3339Nano),
+			payloadHash,
+		)
+	}
+}
+
+func NormalizeEventSpecVersion(version string) string {
+	switch strings.ToLower(strings.TrimSpace(version)) {
+	case "", EventSpecV1, "1":
+		return EventSpecV1
+	case EventSpecV2, "2":
+		return EventSpecV2
+	default:
+		return ""
+	}
+}
+
+func EventSpecVersionForEvent(event CanonicalEvent) string {
+	if event.EventVersion >= CanonicalEventVersionV2 {
+		return EventSpecV2
+	}
+	return EventSpecV1
+}
+
+func CanonicalEventVersionForSpec(version string) int {
+	switch NormalizeEventSpecVersion(version) {
+	case EventSpecV2:
+		return CanonicalEventVersionV2
+	default:
+		return CanonicalEventVersionV1
+	}
 }
 
 func StableID(prefix string, parts ...string) string {

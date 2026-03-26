@@ -10,10 +10,11 @@ import (
 )
 
 type validationReport struct {
-	ConfigPath    string
-	RootPath      string
-	ConfigIssues  []string
-	FixtureIssues []string
+	ConfigPath     string
+	RootPath       string
+	ConfigIssues   []string
+	ConfigWarnings []string
+	FixtureIssues  []string
 }
 
 func (r validationReport) OK() bool {
@@ -32,8 +33,11 @@ func buildValidationReport(configPath, rootPath string) validationReport {
 			report.ConfigIssues = append(report.ConfigIssues, fmt.Sprintf("resolve config path: %v", err))
 		} else {
 			report.ConfigPath = absConfigPath
-			if _, err := config.Load(absConfigPath); err != nil {
+			cfg, err := config.Load(absConfigPath)
+			if err != nil {
 				report.ConfigIssues = append(report.ConfigIssues, flattenValidationIssues(err)...)
+			} else {
+				report.ConfigWarnings = append(report.ConfigWarnings, config.MachineIDWarnings(cfg.MachineID)...)
 			}
 		}
 	}
@@ -64,6 +68,7 @@ func formatValidationFailure(report validationReport) string {
 		b.WriteString("\n")
 	}
 	appendBulletSection(&b, "Config issues", report.ConfigIssues)
+	appendBulletSection(&b, "Config warnings", report.ConfigWarnings)
 	appendBulletSection(&b, "Fixture issues", report.FixtureIssues)
 	if hint := validationHint(report); hint != "" {
 		b.WriteString("Hint:\n")
