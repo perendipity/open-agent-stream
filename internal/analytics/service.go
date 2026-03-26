@@ -296,7 +296,11 @@ func (s *Service) Query(ctx context.Context, opts QueryOptions) ([]string, [][]a
 		if opts.Sensitive {
 			return nil, nil, Status{}, errors.New("analytics query -sensitive cannot be combined with -sql")
 		}
-		columns, rows, err := runQuery(ctx, db, strings.TrimSpace(opts.SQL))
+		sqlText := strings.TrimSpace(opts.SQL)
+		if err := validateReadOnlyQuery(sqlText); err != nil {
+			return nil, nil, Status{}, err
+		}
+		columns, rows, err := runQuery(ctx, db, sqlText)
 		return columns, rows, status, err
 	}
 
@@ -1017,6 +1021,141 @@ func runQuery(ctx context.Context, db *sql.DB, query string) ([]string, [][]any,
 		results = append(results, values)
 	}
 	return columns, results, rows.Err()
+}
+
+func validateReadOnlyQuery(query string) error {
+	normalized, err := normalizeQueryForReadOnlyCheck(query)
+	if err != nil {
+		return fmt.Errorf("analytics query -sql must be a single read-only SELECT or WITH query: %w", err)
+	}
+	tokens := strings.Fields(normalized)
+	if len(tokens) == 0 {
+		return errors.New("analytics query -sql must be a single read-only SELECT or WITH query")
+	}
+	if tokens[len(tokens)-1] == ";" {
+		tokens = tokens[:len(tokens)-1]
+	}
+	for _, token := range tokens {
+		if token == ";" {
+			return errors.New("analytics query -sql must be a single statement")
+		}
+	}
+	if len(tokens) == 0 {
+		return errors.New("analytics query -sql must be a single read-only SELECT or WITH query")
+	}
+	switch tokens[0] {
+	case "select":
+	case "with":
+		if !containsSQLToken(tokens, "select") {
+			return errors.New("analytics query -sql WITH statements must terminate in a SELECT")
+		}
+	default:
+		return errors.New("analytics query -sql only accepts read-only SELECT or WITH queries")
+	}
+	for _, token := range tokens {
+		switch token {
+		case "insert", "update", "delete", "merge", "copy", "call", "create", "alter", "drop", "truncate", "attach", "detach", "vacuum", "export", "import", "install", "load", "set", "reset", "use", "pragma":
+			return fmt.Errorf("analytics query -sql rejects writable keyword %q", token)
+		}
+	}
+	return nil
+}
+
+func normalizeQueryForReadOnlyCheck(query string) (string, error) {
+	var builder strings.Builder
+	inSingle := false
+	inDouble := false
+	inLineComment := false
+	inBlockComment := false
+	for idx := 0; idx < len(query); idx++ {
+		ch := query[idx]
+		next := byte(0)
+		if idx+1 < len(query) {
+			next = query[idx+1]
+		}
+		switch {
+		case inLineComment:
+			if ch == '\n' {
+				inLineComment = false
+				builder.WriteByte(' ')
+			}
+		case inBlockComment:
+			if ch == '*' && next == '/' {
+				inBlockComment = false
+				builder.WriteByte(' ')
+				idx++
+			}
+		case inSingle:
+			if ch == '\'' {
+				if next == '\'' {
+					idx++
+					continue
+				}
+				inSingle = false
+				builder.WriteByte(' ')
+			}
+		case inDouble:
+			if ch == '"' {
+				if next == '"' {
+					idx++
+					continue
+				}
+				inDouble = false
+				builder.WriteByte(' ')
+			}
+		default:
+			switch {
+			case ch == '-' && next == '-':
+				inLineComment = true
+				idx++
+			case ch == '/' && next == '*':
+				inBlockComment = true
+				idx++
+			case ch == '\'':
+				inSingle = true
+				builder.WriteByte(' ')
+			case ch == '"':
+				inDouble = true
+				builder.WriteByte(' ')
+			case ch == ';':
+				builder.WriteString(" ; ")
+			case isSQLIdentifierByte(ch):
+				builder.WriteByte(lowerASCII(ch))
+			default:
+				builder.WriteByte(' ')
+			}
+		}
+	}
+	switch {
+	case inSingle:
+		return "", errors.New("unterminated single-quoted string")
+	case inDouble:
+		return "", errors.New("unterminated double-quoted identifier")
+	case inBlockComment:
+		return "", errors.New("unterminated block comment")
+	default:
+		return builder.String(), nil
+	}
+}
+
+func containsSQLToken(tokens []string, target string) bool {
+	for _, token := range tokens {
+		if token == target {
+			return true
+		}
+	}
+	return false
+}
+
+func isSQLIdentifierByte(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
+}
+
+func lowerASCII(ch byte) byte {
+	if ch >= 'A' && ch <= 'Z' {
+		return ch + ('a' - 'A')
+	}
+	return ch
 }
 
 func countRows(ctx context.Context, db *sql.DB, relation string) (int64, error) {

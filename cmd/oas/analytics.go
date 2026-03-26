@@ -90,7 +90,7 @@ func analyticsQueryCommand(ctx context.Context, args []string) {
 	configPath := fs.String("config", "", "path to config JSON")
 	dbPath := fs.String("db", "", "analytics cache path (default near the resolved state path)")
 	preset := fs.String("preset", "", "built-in query preset: overview, attention, recent_sessions, projects, sources, command_health, timeline, coverage")
-	sqlText := fs.String("sql", "", "run custom SQL against the stable public analytics views")
+	sqlText := fs.String("sql", "", "run read-only SQL against the stable public analytics views")
 	limit := fs.Int("limit", 20, "maximum rows for row-oriented presets (0 uses the preset default)")
 	sensitive := fs.Bool("sensitive", false, "augment supported presets with transient redacted message previews")
 	rebuild := fs.Bool("rebuild", false, "rebuild the cache first if it is not append-compatible")
@@ -98,8 +98,8 @@ func analyticsQueryCommand(ctx context.Context, args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas analytics query -config <path> [flags]
 
-Query the local DuckDB analytics cache. Custom SQL should target the stable
-public views: envelope_facts, event_facts, session_rollups, and command_rollups.
+Query the local DuckDB analytics cache. Read-only custom SQL should target the
+stable public views: envelope_facts, event_facts, session_rollups, and command_rollups.
 Use -sensitive only with built-in presets that support transient local previews.
 
 `)

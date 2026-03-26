@@ -161,6 +161,7 @@ func buildAttentionPreset(ctx context.Context, db *sql.DB, _ Status, limit int, 
 			failed_command_rollup_count,
 			incomplete_command_rollup_count
 		FROM session_rollups
+		WHERE failure_signal_count > 0 OR incomplete_command_rollup_count > 0
 		ORDER BY failure_signal_count DESC, incomplete_command_rollup_count DESC, last_timestamp DESC, global_session_key ASC
 		LIMIT %d
 	`, limit)

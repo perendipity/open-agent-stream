@@ -289,6 +289,55 @@ func TestQueryPresetAliasesAndColumns(t *testing.T) {
 	}
 }
 
+func TestAttentionPresetExcludesCleanSessions(t *testing.T) {
+	ctx := context.Background()
+	svc, cleanup := newTestService(t, "machine-a")
+	defer cleanup()
+
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-clean", Kind: "session.started"})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-clean", Kind: "message.user", Extra: map[string]any{"text": "hi"}})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-clean", Kind: "message.agent", Extra: map[string]any{"text": "ok"}})
+
+	columns, rows, _, err := svc.Query(ctx, QueryOptions{Preset: "failures"})
+	if err != nil {
+		t.Fatalf("Query(failures) error = %v", err)
+	}
+	if got, want := strings.Join(columns, ","), "session,source,project,status,failures,failed_cmds,incomplete_cmds,last_seen,age,span"; got != want {
+		t.Fatalf("attention alias columns = %q, want %q", got, want)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("Query(failures) rows = %d, want 0 for a clean-only fixture", len(rows))
+	}
+}
+
+func TestAttentionPresetIncludesIncompleteSessions(t *testing.T) {
+	ctx := context.Background()
+	svc, cleanup := newTestService(t, "machine-a")
+	defer cleanup()
+
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-incomplete", Kind: "session.started"})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{
+		SessionKey: "sess-incomplete",
+		Kind:       "command.started",
+		Extra:      map[string]any{"call_id": "call-1"},
+	})
+
+	columns, rows, _, err := svc.Query(ctx, QueryOptions{Preset: "attention"})
+	if err != nil {
+		t.Fatalf("Query(attention) error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("Query(attention) rows = %d, want 1 for an incomplete-only session", len(rows))
+	}
+	row := queryRowsToMaps(columns, rows)[0]
+	if got, want := mapString(row["status"]), "incomplete"; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := mapInt64(row["incomplete_cmds"]), int64(1); got != want {
+		t.Fatalf("incomplete_cmds = %d, want %d", got, want)
+	}
+}
+
 func TestQueryProjectsAndSourcesAggregateCounts(t *testing.T) {
 	ctx := context.Background()
 	svc, cleanup := newTestService(t, "machine-a")
@@ -360,6 +409,7 @@ func TestQuerySensitivePreviewsAreTransientAndRespectRedaction(t *testing.T) {
 	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "session.started"})
 	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "message.user", Extra: map[string]any{"text": "hello world"}})
 	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "message.agent", Extra: map[string]any{"text": "done"}})
+	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "command.finished", Extra: map[string]any{"exit_code": 1}})
 
 	columns, rows, status, err := svc.Query(ctx, QueryOptions{
 		Preset:    "attention",
@@ -440,12 +490,17 @@ func TestQuerySensitiveFilteredByPolicy(t *testing.T) {
 	}
 }
 
-func TestQueryRejectsSensitiveSQLAndNegativeLimit(t *testing.T) {
+func TestQueryRejectsSensitiveSQLNegativeLimitAndWritableSQL(t *testing.T) {
 	ctx := context.Background()
 	svc, cleanup := newTestService(t, "machine-a")
 	defer cleanup()
 
 	appendTestEnvelope(t, svc.ledger, testEnvelope{SessionKey: "sess-1", Kind: "session.started"})
+
+	status, err := svc.Build(ctx, BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
 
 	if _, _, _, err := svc.Query(ctx, QueryOptions{
 		SQL:       "select 1",
@@ -459,6 +514,55 @@ func TestQueryRejectsSensitiveSQLAndNegativeLimit(t *testing.T) {
 		Limit:  -1,
 	}); err == nil || !strings.Contains(err.Error(), "-limit") {
 		t.Fatalf("Query(limit=-1) error = %v, want limit validation", err)
+	}
+
+	if _, _, _, err := svc.Query(ctx, QueryOptions{
+		Path: status.Path,
+		SQL:  "delete from analytics_meta",
+	}); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("Query(delete) error = %v, want read-only validation", err)
+	}
+
+	db, err := openDuckDB(status.Path)
+	if err != nil {
+		t.Fatalf("openDuckDB() error = %v", err)
+	}
+	defer db.Close()
+	var metaCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM analytics_meta`).Scan(&metaCount); err != nil {
+		t.Fatalf("Scan(analytics_meta) error = %v", err)
+	}
+	if got, want := metaCount, 1; got != want {
+		t.Fatalf("analytics_meta rows = %d, want %d after rejected writable query", got, want)
+	}
+}
+
+func TestValidateReadOnlyQuery(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		wantErr string
+	}{
+		{name: "select allowed", query: "select * from event_facts limit 1"},
+		{name: "with select allowed", query: "with x as (select 1 as n) select n from x"},
+		{name: "delete rejected", query: "delete from analytics_meta", wantErr: "read-only"},
+		{name: "multiple statements rejected", query: "select 1; delete from analytics_meta", wantErr: "single statement"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateReadOnlyQuery(tc.query)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateReadOnlyQuery() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("validateReadOnlyQuery() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
