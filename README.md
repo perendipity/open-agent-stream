@@ -82,12 +82,20 @@ oas config init -output ./oas.json
 ```
 
 This creates a starter config with current defaults, fixture-backed Codex and
-Claude sources for a local demo, and a `stdout` sink. If you want a fuller
-reference config, see [`examples/config.example.json`](examples/config.example.json)
-and the examples index in [`examples/README.md`](examples/README.md).
-That reference config includes a placeholder remote `http` sink using the
-current `settings` and `delivery` blocks, so treat it as a shape reference and
-edit the destination before you run it against a real endpoint.
+Claude sources for a local demo, and a `stdout` sink. Treat it as a safe demo
+config, not a serious multi-machine starting point.
+
+For real use:
+
+- keep the live config outside the repo checkout, usually under
+  `~/.config/open-agent-stream/` or `/etc/open-agent-stream/`
+- replace the fixture roots with real local session roots before you run OAS
+- use a private ops repo or an existing infrastructure repo for committed
+  machine configs and shared sink templates
+
+If you want fuller shape references, see
+[`examples/config.example.json`](examples/config.example.json) and the examples
+index in [`examples/README.md`](examples/README.md).
 
 ### 2. Inspect and validate what OAS will actually use
 
@@ -113,6 +121,13 @@ oas run -config ./oas.json
 With the default starter config, this ingests the fixture sources in
 `./fixtures/sources/...`, appends them to the local ledger, normalizes them,
 and writes canonical events to stdout.
+
+For serious local use, avoid pointing OAS at top-level agent home directories
+such as `~/.codex` or `~/.claude`; those trees usually contain unrelated JSON.
+Prefer session subtrees such as:
+
+- Codex: `~/.codex/sessions`, optionally `~/.codex/archived_sessions`
+- Claude: `~/.claude/projects`
 
 ### 4. Export a deterministic review file
 
@@ -235,6 +250,13 @@ Common built-in choices:
 - `command`: stage a sealed payload file and invoke your own transport such as
   `rsync`, `scp`, or a wrapper script
 - `s3`: upload sealed batch objects to a bucket with a deterministic object key
+
+For serious multi-machine use, do not keep the live destination config inside
+the public OAS repo checkout. Keep committed configs in a private ops repo and
+render or copy the live machine config into `~/.config/open-agent-stream/`.
+See [`docs/adoption/config-management.md`](docs/adoption/config-management.md),
+[`docs/adoption/remote-destinations.md`](docs/adoption/remote-destinations.md),
+and [`docs/adoption/multi-machine.md`](docs/adoption/multi-machine.md).
 
 A minimal `http` sink looks like:
 
