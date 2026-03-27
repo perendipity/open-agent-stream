@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/open-agent-stream/open-agent-stream/internal/sinkauth"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sinkapi"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
@@ -129,6 +130,9 @@ func Validate(cfg Config) error {
 		}
 		if err := validateDeliveryConfig(sink.Delivery); err != nil {
 			errs = append(errs, fmt.Errorf("sinks[%d].delivery: %w", i, err))
+		}
+		if err := sinkauth.Validate(sink); err != nil {
+			errs = append(errs, fmt.Errorf("sinks[%d]: %w", i, err))
 		}
 	}
 	if len(errs) > 0 {

@@ -123,3 +123,34 @@ func TestValidateUsesIndexedFieldPathsForNestedConfigErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRejectsInvalidSinkAuthConfigWithIndexedPath(t *testing.T) {
+	cfg := Config{
+		Version:              "0.1",
+		PollInterval:         "3s",
+		ErrorBackoff:         "10s",
+		MaxConsecutiveErrors: 10,
+		Sources: []sourceapi.Config{{
+			InstanceID: "source-1",
+			Type:       "codex_local",
+			Root:       "/tmp/source",
+		}},
+		Sinks: []sinkapi.Config{{
+			ID:   "remote",
+			Type: "http",
+			Settings: map[string]any{
+				"bearer_token_ref": "not-a-ref",
+			},
+		}},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected Validate to fail")
+	}
+	for _, want := range []string{"sinks[0]", "bearer_token_ref"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate error = %v, want mention of %q", err, want)
+		}
+	}
+}

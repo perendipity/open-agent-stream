@@ -142,26 +142,43 @@ type daemonStatusView struct {
 }
 
 type daemonDeliveryStatus struct {
-	SinkID                   string  `json:"sink_id"`
-	QueueDepth               int     `json:"queue_depth"`
-	ReadyBatchCount          int     `json:"ready_batch_count"`
-	RetryingBatchCount       int     `json:"retrying_batch_count"`
-	QuarantinedBatchCount    int     `json:"quarantined_batch_count"`
-	OldestPendingAt          string  `json:"oldest_pending_at,omitempty"`
-	NextAttemptAt            string  `json:"next_attempt_at,omitempty"`
-	AckedContiguousOffset    int64   `json:"acked_contiguous_offset"`
-	TerminalContiguousOffset int64   `json:"terminal_contiguous_offset"`
-	GapCount                 int     `json:"gap_count"`
-	SuccessfulBatches        int     `json:"successful_batches"`
-	SuccessfulEvents         int     `json:"successful_events"`
-	FailedAttempts           int     `json:"failed_attempts"`
-	QuarantinedBatches       int     `json:"quarantined_batches"`
-	LastTerminalError        string  `json:"last_terminal_error,omitempty"`
-	EventsLastMinute         int     `json:"events_last_minute"`
-	AttemptsLastMinute       int     `json:"attempts_last_minute"`
-	SuccessesLastMinute      int     `json:"successes_last_minute"`
-	AvgBatchEventsLastMinute float64 `json:"avg_batch_events_last_minute,omitempty"`
-	MaxBatchEventsLastMinute int     `json:"max_batch_events_last_minute,omitempty"`
+	SinkID                      string                       `json:"sink_id"`
+	QueueDepth                  int                          `json:"queue_depth"`
+	ReadyBatchCount             int                          `json:"ready_batch_count"`
+	RetryingBatchCount          int                          `json:"retrying_batch_count"`
+	BlockedBatchCount           int                          `json:"blocked_batch_count"`
+	BlockedKind                 string                       `json:"blocked_kind,omitempty"`
+	QuarantinedBatchCount       int                          `json:"quarantined_batch_count"`
+	OldestPendingAt             string                       `json:"oldest_pending_at,omitempty"`
+	NextAttemptAt               string                       `json:"next_attempt_at,omitempty"`
+	BlockedSince                string                       `json:"blocked_since,omitempty"`
+	AckedContiguousOffset       int64                        `json:"acked_contiguous_offset"`
+	TerminalContiguousOffset    int64                        `json:"terminal_contiguous_offset"`
+	GapCount                    int                          `json:"gap_count"`
+	SuccessfulBatches           int                          `json:"successful_batches"`
+	SuccessfulEvents            int                          `json:"successful_events"`
+	FailedAttempts              int                          `json:"failed_attempts"`
+	RetryFailureAttempts        int                          `json:"retry_failure_attempts"`
+	AuthFailureAttempts         int                          `json:"auth_failure_attempts"`
+	ConfigFailureAttempts       int                          `json:"config_failure_attempts"`
+	SuccessfulSecretResolutions int                          `json:"successful_secret_resolutions"`
+	QuarantinedBatches          int                          `json:"quarantined_batches"`
+	LastAuthError               string                       `json:"last_auth_error,omitempty"`
+	LastBlockedError            string                       `json:"last_blocked_error,omitempty"`
+	LastTerminalError           string                       `json:"last_terminal_error,omitempty"`
+	EventsLastMinute            int                          `json:"events_last_minute"`
+	AttemptsLastMinute          int                          `json:"attempts_last_minute"`
+	SuccessesLastMinute         int                          `json:"successes_last_minute"`
+	AvgBatchEventsLastMinute    float64                      `json:"avg_batch_events_last_minute,omitempty"`
+	MaxBatchEventsLastMinute    int                          `json:"max_batch_events_last_minute,omitempty"`
+	SecretProviderStats         []daemonSecretProviderStatus `json:"secret_provider_stats,omitempty"`
+}
+
+type daemonSecretProviderStatus struct {
+	Provider              string `json:"provider"`
+	SuccessfulResolutions int    `json:"successful_resolutions"`
+	AuthFailures          int    `json:"auth_failures"`
+	ConfigFailures        int    `json:"config_failures"`
 }
 
 type daemonRuntimeStatus struct {
@@ -899,18 +916,41 @@ func writeDaemonStatusReport(writer io.Writer, view daemonStatusView) error {
 	if len(view.Delivery) > 0 {
 		b.WriteString("Delivery:\n")
 		for _, status := range view.Delivery {
-			fmt.Fprintf(&b, "  - %s: queue=%d ready=%d retrying=%d quarantined=%d acked=%d terminal=%d gaps=%d\n",
+			fmt.Fprintf(&b, "  - %s: queue=%d ready=%d retrying=%d blocked=%d quarantined=%d acked=%d terminal=%d gaps=%d\n",
 				status.SinkID,
 				status.QueueDepth,
 				status.ReadyBatchCount,
 				status.RetryingBatchCount,
+				status.BlockedBatchCount,
 				status.QuarantinedBatchCount,
 				status.AckedContiguousOffset,
 				status.TerminalContiguousOffset,
 				status.GapCount,
 			)
+			if status.BlockedKind != "" {
+				fmt.Fprintf(&b, "    blocked_kind: %s\n", status.BlockedKind)
+			}
+			if status.BlockedSince != "" {
+				fmt.Fprintf(&b, "    blocked_since: %s\n", status.BlockedSince)
+			}
+			if status.LastBlockedError != "" {
+				fmt.Fprintf(&b, "    last_blocked_error: %s\n", status.LastBlockedError)
+			}
+			if status.LastAuthError != "" {
+				fmt.Fprintf(&b, "    last_auth_error: %s\n", status.LastAuthError)
+			}
 			if status.LastTerminalError != "" {
 				fmt.Fprintf(&b, "    last_terminal_error: %s\n", status.LastTerminalError)
+			}
+			if len(status.SecretProviderStats) > 0 {
+				for _, provider := range status.SecretProviderStats {
+					fmt.Fprintf(&b, "    secret_provider[%s]: resolutions=%d auth_failures=%d config_failures=%d\n",
+						provider.Provider,
+						provider.SuccessfulResolutions,
+						provider.AuthFailures,
+						provider.ConfigFailures,
+					)
+				}
 			}
 		}
 		b.WriteString("\n")
@@ -1023,30 +1063,49 @@ func daemonDeliveryStatusFor(cfg config.Config) ([]daemonDeliveryStatus, error) 
 			return nil, err
 		}
 		status := daemonDeliveryStatus{
-			SinkID:                   summary.SinkID,
-			QueueDepth:               summary.QueueDepth,
-			ReadyBatchCount:          summary.ReadyBatchCount,
-			RetryingBatchCount:       summary.RetryingBatchCount,
-			QuarantinedBatchCount:    summary.QuarantinedBatchCount,
-			AckedContiguousOffset:    summary.AckedContiguousOffset,
-			TerminalContiguousOffset: summary.TerminalContiguousOffset,
-			GapCount:                 summary.GapCount,
-			SuccessfulBatches:        summary.SuccessfulBatches,
-			SuccessfulEvents:         summary.SuccessfulEvents,
-			FailedAttempts:           summary.FailedAttempts,
-			QuarantinedBatches:       summary.QuarantinedBatches,
-			LastTerminalError:        summary.LastTerminalError,
-			EventsLastMinute:         summary.EventsLastMinute,
-			AttemptsLastMinute:       summary.AttemptsLastMinute,
-			SuccessesLastMinute:      summary.SuccessesLastMinute,
-			AvgBatchEventsLastMinute: summary.AvgBatchEventsLastMinute,
-			MaxBatchEventsLastMinute: summary.MaxBatchEventsLastMinute,
+			SinkID:                      summary.SinkID,
+			QueueDepth:                  summary.QueueDepth,
+			ReadyBatchCount:             summary.ReadyBatchCount,
+			RetryingBatchCount:          summary.RetryingBatchCount,
+			BlockedBatchCount:           summary.BlockedBatchCount,
+			BlockedKind:                 summary.BlockedKind,
+			QuarantinedBatchCount:       summary.QuarantinedBatchCount,
+			AckedContiguousOffset:       summary.AckedContiguousOffset,
+			TerminalContiguousOffset:    summary.TerminalContiguousOffset,
+			GapCount:                    summary.GapCount,
+			SuccessfulBatches:           summary.SuccessfulBatches,
+			SuccessfulEvents:            summary.SuccessfulEvents,
+			FailedAttempts:              summary.FailedAttempts,
+			RetryFailureAttempts:        summary.RetryFailureAttempts,
+			AuthFailureAttempts:         summary.AuthFailureAttempts,
+			ConfigFailureAttempts:       summary.ConfigFailureAttempts,
+			SuccessfulSecretResolutions: summary.SuccessfulSecretResolutions,
+			QuarantinedBatches:          summary.QuarantinedBatches,
+			LastAuthError:               summary.LastAuthError,
+			LastBlockedError:            summary.LastBlockedError,
+			LastTerminalError:           summary.LastTerminalError,
+			EventsLastMinute:            summary.EventsLastMinute,
+			AttemptsLastMinute:          summary.AttemptsLastMinute,
+			SuccessesLastMinute:         summary.SuccessesLastMinute,
+			AvgBatchEventsLastMinute:    summary.AvgBatchEventsLastMinute,
+			MaxBatchEventsLastMinute:    summary.MaxBatchEventsLastMinute,
 		}
 		if !summary.OldestPendingAt.IsZero() {
 			status.OldestPendingAt = summary.OldestPendingAt.Format(time.RFC3339Nano)
 		}
 		if !summary.NextAttemptAt.IsZero() {
 			status.NextAttemptAt = summary.NextAttemptAt.Format(time.RFC3339Nano)
+		}
+		if !summary.BlockedSince.IsZero() {
+			status.BlockedSince = summary.BlockedSince.Format(time.RFC3339Nano)
+		}
+		for _, provider := range summary.SecretProviderStats {
+			status.SecretProviderStats = append(status.SecretProviderStats, daemonSecretProviderStatus{
+				Provider:              provider.Provider,
+				SuccessfulResolutions: provider.SuccessfulResolutions,
+				AuthFailures:          provider.AuthFailures,
+				ConfigFailures:        provider.ConfigFailures,
+			})
 		}
 		statuses = append(statuses, status)
 	}

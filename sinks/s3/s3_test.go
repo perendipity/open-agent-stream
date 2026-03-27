@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/delivery"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
@@ -225,5 +228,151 @@ func TestHealthChecksCredentialsAndBucketAccess(t *testing.T) {
 	}
 	if client.headInput == nil || client.headInput.Bucket == nil || *client.headInput.Bucket != "example-bucket" {
 		t.Fatalf("head bucket input=%v, want example-bucket", client.headInput)
+	}
+}
+
+func TestSendPreparedWithSecretRefsRecordsAuthMetrics(t *testing.T) {
+	t.Setenv("OAS_S3_ACCESS_KEY_ID", "test-access-key")
+	t.Setenv("OAS_S3_SECRET_ACCESS_KEY", "test-secret-key")
+
+	client := &fakePutObjectClient{}
+	sink := New(sinkapi.Config{
+		ID:   "archive",
+		Type: "s3",
+		Settings: map[string]any{
+			"bucket": "example-bucket",
+			"region": "us-west-2",
+			"auth": map[string]any{
+				"mode":                  "secret_refs",
+				"access_key_id_ref":     "env://OAS_S3_ACCESS_KEY_ID",
+				"secret_access_key_ref": "env://OAS_S3_SECRET_ACCESS_KEY",
+			},
+		},
+	})
+	sink.client = client
+	if err := sink.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := sink.SendPrepared(context.Background(), delivery.PreparedDispatch{
+		SinkID:      "archive",
+		BatchID:     "batch-1",
+		Payload:     []byte("payload"),
+		ContentType: "application/x-ndjson",
+		Destination: map[string]any{"key": "oas/archive/batch-1.jsonl.gz"},
+		EventCount:  1,
+		CreatedAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("SendPrepared() error = %v", err)
+	}
+	if got, want := len(result.AuthMetrics), 2; got != want {
+		t.Fatalf("len(AuthMetrics) = %d, want %d", got, want)
+	}
+	for _, metric := range result.AuthMetrics {
+		if got, want := metric.Provider, "env"; got != want {
+			t.Fatalf("Provider = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestHealthProfileModeUsesCredentialFileRef(t *testing.T) {
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	base := t.TempDir()
+	credentialsPath := filepath.Join(base, "credentials")
+	credentials := "[local]\naws_access_key_id = test\naws_secret_access_key = test\n"
+	if err := os.WriteFile(credentialsPath, []byte(credentials), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakePutObjectClient{}
+	sink := New(sinkapi.Config{
+		ID:   "archive",
+		Type: "s3",
+		Settings: map[string]any{
+			"bucket": "example-bucket",
+			"region": "us-west-2",
+			"auth": map[string]any{
+				"mode":                 "profile",
+				"profile":              "local",
+				"credentials_file_ref": "file://" + credentialsPath,
+			},
+		},
+	})
+	sink.client = client
+	if err := sink.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Health(context.Background()); err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+}
+
+func TestSendPreparedClassifiesCredentialFailuresAsBlocked(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_SESSION_TOKEN", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	tests := []struct {
+		name     string
+		err      error
+		wantKind delivery.BlockedKind
+		wantCode string
+	}{
+		{
+			name:     "expired token",
+			err:      &smithy.GenericAPIError{Code: "ExpiredToken", Message: "token expired"},
+			wantKind: delivery.BlockedKindAuth,
+			wantCode: "auth_expired",
+		},
+		{
+			name:     "access denied",
+			err:      &smithy.GenericAPIError{Code: "AccessDenied", Message: "denied"},
+			wantKind: delivery.BlockedKindConfig,
+			wantCode: "sink_access_denied",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			sink := New(sinkapi.Config{
+				ID:   "archive",
+				Type: "s3",
+				Settings: map[string]any{
+					"bucket": "example-bucket",
+					"region": "us-west-2",
+				},
+			})
+			sink.client = &fakePutObjectClient{err: tc.err}
+			if err := sink.Init(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := sink.SendPrepared(context.Background(), delivery.PreparedDispatch{
+				SinkID:      "archive",
+				BatchID:     "batch-1",
+				Payload:     []byte("payload"),
+				ContentType: "application/x-ndjson",
+				Destination: map[string]any{"key": "oas/archive/batch-1.jsonl.gz"},
+				EventCount:  1,
+				CreatedAt:   time.Now().UTC(),
+			})
+			if err == nil {
+				t.Fatal("expected blocked send error")
+			}
+			var blocked *delivery.BlockedError
+			if !errors.As(err, &blocked) {
+				t.Fatalf("SendPrepared() error = %T, want *BlockedError", err)
+			}
+			if got, want := blocked.Kind, tc.wantKind; got != want {
+				t.Fatalf("Blocked kind = %q, want %q", got, want)
+			}
+			if got, want := blocked.Code, tc.wantCode; got != want {
+				t.Fatalf("Blocked code = %q, want %q", got, want)
+			}
+		})
 	}
 }

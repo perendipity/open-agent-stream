@@ -109,8 +109,14 @@ Do not commit secrets into OAS config JSON.
 
 Use:
 
-- environment-variable references for HTTP sinks, such as `bearer_token_env`
-- the normal AWS SDK credential chain for `s3`
+- secret references for HTTP sinks, such as
+  `bearer_token_ref: "env://OAS_REMOTE_TOKEN"` or
+  `bearer_token_ref: "op://vault/oas/collector-token"`
+- `s3` auth in this order:
+  - implicit AWS SDK default chain when `settings.auth` is absent
+  - `settings.auth.mode: "profile"` with a named AWS profile
+  - `settings.auth.mode: "secret_refs"` only when the environment cannot use
+    the first two options
 - machine environment or a secret manager for `command` and `external` sinks
 
 What is usually safe to commit in a private ops repo:
@@ -122,13 +128,34 @@ What is usually safe to commit in a private ops repo:
 - delivery timing and retry policy
 - machine IDs
 - source-root patterns
+- AWS profile names
+- secret references such as `env://...`, `op://...`, or `file://...`
 
 What should stay out of committed config:
 
 - bearer tokens
 - AWS access keys
+- AWS session tokens
+- resolved secret values from any provider
 - ad hoc smoke-test configs
 - temporary local-only overrides
+
+Stable secret-reference schemes in v1:
+
+- `env://VAR_NAME`
+- `file:///absolute/path`
+- `op://vault/item/field`
+
+Experimental secret-reference schemes in v1:
+
+- `keychain://service/account`
+- `pass://entry/path`
+
+`file://` is intentionally constrained. Use it for externally managed secret
+files or mounted ephemeral secrets, not as your default secret store. OAS
+rejects world-readable and world-writable secret files, warns on group access
+outside runtime secret directories, and warns when the secret file resolves
+inside the current repo worktree.
 
 ## What to commit to this public repo
 

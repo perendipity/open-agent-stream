@@ -33,9 +33,15 @@ type Batch struct {
 }
 
 type Result struct {
-	Acked      int                   `json:"acked"`
-	Failed     int                   `json:"failed"`
-	Checkpoint schema.SinkCheckpoint `json:"checkpoint"`
+	Acked       int                   `json:"acked"`
+	Failed      int                   `json:"failed"`
+	Checkpoint  schema.SinkCheckpoint `json:"checkpoint"`
+	AuthMetrics []AuthMetric          `json:"auth_metrics,omitempty"`
+}
+
+type AuthMetric struct {
+	Provider            string `json:"provider"`
+	ResolvedSecretCount int    `json:"resolved_secret_count,omitempty"`
 }
 
 type Sink interface {

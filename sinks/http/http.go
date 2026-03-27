@@ -8,12 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/delivery"
+	"github.com/open-agent-stream/open-agent-stream/internal/secretref"
+	"github.com/open-agent-stream/open-agent-stream/internal/sinkauth"
 	"github.com/open-agent-stream/open-agent-stream/internal/sinkpayload"
 	"github.com/open-agent-stream/open-agent-stream/internal/sinkutil"
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
@@ -28,10 +29,11 @@ type Sink struct {
 	format         string
 	timeout        time.Duration
 	headers        map[string]string
-	bearerTokenEnv string
+	bearerTokenRef string
 	successRules   []statusRule
 	retryRules     []statusRule
 	permanentRules []statusRule
+	resolver       *secretref.Resolver
 }
 
 type statusRule struct {
@@ -40,7 +42,10 @@ type statusRule struct {
 }
 
 func New(cfg sinkapi.Config) *Sink {
-	return &Sink{cfg: cfg}
+	return &Sink{
+		cfg:      cfg,
+		resolver: secretref.Default(),
+	}
 }
 
 func (s *Sink) ID() string   { return s.cfg.ID }
@@ -56,7 +61,7 @@ func (s *Sink) Init(context.Context) error {
 	s.format = resolved.Format
 	s.timeout = resolved.Timeout
 	s.headers = resolved.Headers
-	s.bearerTokenEnv = resolved.BearerTokenEnv
+	s.bearerTokenRef = resolved.BearerTokenRef
 	s.successRules = resolved.SuccessRules
 	s.retryRules = resolved.RetryRules
 	s.permanentRules = resolved.PermanentRules
@@ -70,13 +75,17 @@ func (s *Sink) resolve() (resolvedConfig, error) {
 		Method:         strings.ToUpper(firstNonEmpty(sinkutil.String(s.cfg, "method"), http.MethodPost)),
 		Format:         firstNonEmpty(sinkutil.String(s.cfg, "format"), sinkpayload.FormatOASBatchJSON),
 		Headers:        sinkutil.StringMap(s.cfg, "headers"),
-		BearerTokenEnv: sinkutil.String(s.cfg, "bearer_token_env"),
 		ProbeURL:       sinkutil.String(s.cfg, "probe_url"),
 		ProbeMethod:    strings.ToUpper(firstNonEmpty(sinkutil.String(s.cfg, "probe_method"), http.MethodHead)),
 		SuccessRules:   parseStatusRules(sinkutil.StringSlice(s.cfg, "success_statuses"), []statusRule{{min: 200, max: 299}}),
 		RetryRules:     parseStatusRules(sinkutil.StringSlice(s.cfg, "retry_on_statuses"), []statusRule{{min: 429, max: 429}, {min: 500, max: 599}}),
 		PermanentRules: parseStatusRules(sinkutil.StringSlice(s.cfg, "permanent_on_statuses"), []statusRule{{min: 400, max: 499}}),
 	}
+	auth, err := sinkauth.HTTP(s.cfg)
+	if err != nil {
+		return resolvedConfig{}, err
+	}
+	resolved.BearerTokenRef = auth.BearerTokenRef
 	if resolved.URL == "" {
 		return resolvedConfig{}, errors.New("http sink requires url")
 	}
@@ -134,10 +143,17 @@ func (s *Sink) SendPrepared(ctx context.Context, prepared delivery.PreparedDispa
 	for k, v := range prepared.Headers {
 		req.Header.Set(k, v)
 	}
-	if s.bearerTokenEnv != "" {
-		if token := strings.TrimSpace(os.Getenv(s.bearerTokenEnv)); token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+	var result sinkapi.Result
+	if s.bearerTokenRef != "" {
+		token, secret, err := s.resolveBearerToken(ctx)
+		if err != nil {
+			return sinkapi.Result{}, err
 		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		result.AuthMetrics = []sinkapi.AuthMetric{{
+			Provider:            secret.Provider,
+			ResolvedSecretCount: 1,
+		}}
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -145,16 +161,21 @@ func (s *Sink) SendPrepared(ctx context.Context, prepared delivery.PreparedDispa
 	}
 	defer resp.Body.Close()
 	if s.matches(resp.StatusCode, s.successRules) {
-		return sinkapi.Result{
-			Acked: prepared.EventCount,
-			Checkpoint: schema.SinkCheckpoint{
-				SinkID:        prepared.SinkID,
-				AckedAt:       time.Now().UTC(),
-				DeliveryCount: prepared.EventCount,
-			},
-		}, nil
+		result.Acked = prepared.EventCount
+		result.Checkpoint = schema.SinkCheckpoint{
+			SinkID:        prepared.SinkID,
+			AckedAt:       time.Now().UTC(),
+			DeliveryCount: prepared.EventCount,
+		}
+		return result, nil
 	}
 	message := httpStatusError(resp)
+	if s.bearerTokenRef != "" && resp.StatusCode == http.StatusUnauthorized {
+		return sinkapi.Result{}, delivery.NewBlockedError(delivery.BlockedKindAuth, "auth_denied", "http_bearer", "", errors.New(message))
+	}
+	if s.bearerTokenRef != "" && resp.StatusCode == http.StatusForbidden {
+		return sinkapi.Result{}, delivery.NewBlockedError(delivery.BlockedKindConfig, "sink_access_denied", "http_bearer", "", errors.New(message))
+	}
 	if s.matches(resp.StatusCode, s.retryRules) || (resp.StatusCode >= 400 && resp.StatusCode < 500 && !s.matches(resp.StatusCode, s.permanentRules)) {
 		return sinkapi.Result{}, errors.New(message)
 	}
@@ -181,8 +202,14 @@ func (s *Sink) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if resolved.BearerTokenEnv != "" && strings.TrimSpace(os.Getenv(resolved.BearerTokenEnv)) == "" {
-		return fmt.Errorf("http sink bearer_token_env %q is set but empty", resolved.BearerTokenEnv)
+	if resolved.BearerTokenRef != "" {
+		token, _, err := s.resolveBearerToken(ctx)
+		if err != nil {
+			return err
+		}
+		if token == "" {
+			return errors.New("http sink bearer token resolved empty")
+		}
 	}
 	if resolved.ProbeURL == "" {
 		return nil
@@ -194,8 +221,12 @@ func (s *Sink) Health(ctx context.Context) error {
 	for k, v := range resolved.Headers {
 		req.Header.Set(k, v)
 	}
-	if resolved.BearerTokenEnv != "" {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(os.Getenv(resolved.BearerTokenEnv)))
+	if resolved.BearerTokenRef != "" {
+		token, _, err := s.resolveBearerToken(ctx)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := &http.Client{Timeout: resolved.Timeout}
 	resp, err := client.Do(req)
@@ -216,12 +247,39 @@ type resolvedConfig struct {
 	Format         string
 	Timeout        time.Duration
 	Headers        map[string]string
-	BearerTokenEnv string
+	BearerTokenRef string
 	ProbeURL       string
 	ProbeMethod    string
 	SuccessRules   []statusRule
 	RetryRules     []statusRule
 	PermanentRules []statusRule
+}
+
+func (s *Sink) resolveBearerToken(ctx context.Context) (string, secretref.ResolvedSecret, error) {
+	resolved, err := s.resolver.Resolve(ctx, s.bearerTokenRef)
+	if err != nil {
+		return "", secretref.ResolvedSecret{}, blockedSecretErr(err)
+	}
+	token := strings.TrimSpace(string(resolved.Value))
+	if token == "" {
+		return "", secretref.ResolvedSecret{}, delivery.NewBlockedError(delivery.BlockedKindConfig, secretref.KindMissingSecret, resolved.Provider, resolved.RefFingerprint, errors.New("http bearer token resolved empty"))
+	}
+	return token, resolved, nil
+}
+
+func blockedSecretErr(err error) error {
+	var refErr *secretref.Error
+	if !errors.As(err, &refErr) {
+		return err
+	}
+	switch refErr.BlockedKind() {
+	case "auth":
+		return delivery.NewBlockedError(delivery.BlockedKindAuth, refErr.Kind, refErr.Provider, refErr.RefFingerprint, refErr)
+	case "config":
+		return delivery.NewBlockedError(delivery.BlockedKindConfig, refErr.Kind, refErr.Provider, refErr.RefFingerprint, refErr)
+	default:
+		return err
+	}
 }
 
 func parseStatusRules(values []string, fallback []statusRule) []statusRule {

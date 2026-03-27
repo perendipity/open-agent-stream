@@ -109,3 +109,111 @@ func TestHealthUsesOptionalProbeURL(t *testing.T) {
 		t.Fatalf("Health() error = %v", err)
 	}
 }
+
+func TestSendPreparedUsesBearerTokenRefAndRecordsAuthMetrics(t *testing.T) {
+	t.Setenv("OAS_REMOTE_TOKEN", "secret-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("Authorization"), "Bearer secret-token"; got != want {
+			t.Fatalf("Authorization = %q, want %q", got, want)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sink := New(sinkapi.Config{
+		ID:   "remote",
+		Type: "http",
+		Settings: map[string]any{
+			"url":              server.URL,
+			"bearer_token_ref": "env://OAS_REMOTE_TOKEN",
+		},
+	})
+	if err := sink.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := sink.SendPrepared(context.Background(), delivery.PreparedDispatch{
+		SinkID:          "remote",
+		BatchID:         "batch-1",
+		Payload:         []byte(`{"events":[]}`),
+		PayloadSHA256:   schema.HashBytes([]byte(`{"events":[]}`)),
+		ContentType:     "application/json",
+		Headers:         map[string]string{"Content-Type": "application/json"},
+		PayloadFormat:   "oas_batch_json",
+		LedgerMinOffset: 1,
+		LedgerMaxOffset: 1,
+		EventCount:      1,
+		CreatedAt:       time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("SendPrepared() error = %v", err)
+	}
+	if got, want := len(result.AuthMetrics), 1; got != want {
+		t.Fatalf("len(AuthMetrics) = %d, want %d", got, want)
+	}
+	if got, want := result.AuthMetrics[0].Provider, "env"; got != want {
+		t.Fatalf("Provider = %q, want %q", got, want)
+	}
+}
+
+func TestSendPreparedClassifiesAuthBlockedResponses(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		wantKind delivery.BlockedKind
+		wantCode string
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, wantKind: delivery.BlockedKindAuth, wantCode: "auth_denied"},
+		{name: "forbidden", status: http.StatusForbidden, wantKind: delivery.BlockedKindConfig, wantCode: "sink_access_denied"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OAS_REMOTE_TOKEN", "secret-token")
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+
+			sink := New(sinkapi.Config{
+				ID:   "remote",
+				Type: "http",
+				Settings: map[string]any{
+					"url":              server.URL,
+					"bearer_token_ref": "env://OAS_REMOTE_TOKEN",
+				},
+			})
+			if err := sink.Init(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := sink.SendPrepared(context.Background(), delivery.PreparedDispatch{
+				SinkID:          "remote",
+				BatchID:         "batch-1",
+				Payload:         []byte(`{"events":[]}`),
+				PayloadSHA256:   schema.HashBytes([]byte(`{"events":[]}`)),
+				ContentType:     "application/json",
+				Headers:         map[string]string{"Content-Type": "application/json"},
+				PayloadFormat:   "oas_batch_json",
+				LedgerMinOffset: 1,
+				LedgerMaxOffset: 1,
+				EventCount:      1,
+				CreatedAt:       time.Now().UTC(),
+			})
+			if err == nil {
+				t.Fatal("expected blocked send error")
+			}
+			var blocked *delivery.BlockedError
+			if !errors.As(err, &blocked) {
+				t.Fatalf("SendPrepared() error = %T, want *BlockedError", err)
+			}
+			if got, want := blocked.Kind, tc.wantKind; got != want {
+				t.Fatalf("Blocked kind = %q, want %q", got, want)
+			}
+			if got, want := blocked.Code, tc.wantCode; got != want {
+				t.Fatalf("Blocked code = %q, want %q", got, want)
+			}
+		})
+	}
+}
