@@ -57,6 +57,9 @@ existing infrastructure repo, not in the public OAS source checkout. See
 - prefer bucket-level default encryption
 - keep each machine on its own local ledger/state even if all machines share one bucket prefix
 - keep `event_spec_version: "v2"` on the shared sink so payloads retain host identity
+- when using `settings.auth.mode: "profile"` on Linux or under a service
+  manager, prefer explicit `credentials_file_ref` and `config_file_ref` so the
+  named profile does not depend on ambient `AWS_PROFILE` or `HOME`
 
 ## Recommended source roots
 
@@ -76,6 +79,11 @@ subtrees first and widen them later.
 - Linux `systemd`: start from [`/packaging/systemd/oas.service`](../../packaging/systemd/oas.service)
 - macOS `launchd`: start from [`/packaging/launchd/dev.open-agent-stream.oas.plist`](../../packaging/launchd/dev.open-agent-stream.oas.plist)
 - other environments: run `oas daemon run` under your existing supervisor
+
+For `s3` profile auth, run OAS as the same user that owns the AWS shared config
+files. In minimal service-manager environments, prefer explicit
+`credentials_file_ref` and `config_file_ref` in the sink config over ambient
+`AWS_PROFILE`.
 
 ## Validation before enabling continuous mode
 

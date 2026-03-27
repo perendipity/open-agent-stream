@@ -88,6 +88,12 @@ that step.
 
 The service templates are intentionally conservative. Update the config path, log path, working directory, and binary path before installation.
 
+If an `s3` sink uses `settings.auth.mode: "profile"`, prefer pinning
+`credentials_file_ref` and `config_file_ref` in the sink config rather than
+depending on ambient `AWS_PROFILE`. This is the most reliable path for Linux
+services and other minimal process-manager environments. Run the service as the
+same user that owns those AWS config files.
+
 When you install OAS across multiple machines, keep the service file or plist
 pointed at a local config path such as `~/.config/open-agent-stream/oas.json`
 or `/etc/open-agent-stream/oas.json`. Share the config content through a

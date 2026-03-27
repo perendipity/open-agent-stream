@@ -261,6 +261,24 @@ chain behavior, the shortest migration is to pin the sink to a named profile:
 That keeps OAS off the ambient default profile and makes the credential source
 explicit without putting keys into OAS JSON.
 
+For Linux or other service-managed installs, prefer pinning the AWS shared
+config files too instead of relying on ambient `AWS_PROFILE` or `HOME`:
+
+```json
+{
+  "auth": {
+    "mode": "profile",
+    "profile": "oas-shared-archive-s3",
+    "credentials_file_ref": "file:///home/USER/.aws/credentials",
+    "config_file_ref": "file:///home/USER/.aws/config"
+  }
+}
+```
+
+That keeps `oas doctor`, `oas daemon run`, and service-manager launches on the
+same named profile even when the process environment is minimal or the working
+directory changes. Run OAS as the same user that owns those AWS files.
+
 OAS treats expired AWS sessions, locked providers, and missing secret-manager
 sessions as blocked delivery conditions. Those failures stay in retry/backoff
 instead of poisoning batches.
