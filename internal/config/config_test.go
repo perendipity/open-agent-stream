@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,83 @@ func TestValidateRejectsInvalidSinkAuthConfigWithIndexedPath(t *testing.T) {
 	for _, want := range []string{"sinks[0]", "bearer_token_ref"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("Validate error = %v, want mention of %q", err, want)
+		}
+	}
+}
+
+func TestValidateRejectsOverlappingSourceRoots(t *testing.T) {
+	cfg := Config{
+		Version:              "0.1",
+		MachineID:            "machine-123",
+		PollInterval:         "3s",
+		ErrorBackoff:         "10s",
+		MaxConsecutiveErrors: 10,
+		Sources: []sourceapi.Config{
+			{
+				InstanceID: "claude-root",
+				Type:       "claude_local",
+				Root:       "/tmp/claude/projects",
+			},
+			{
+				InstanceID: "claude-kairanora",
+				Type:       "claude_local",
+				Root:       "/tmp/claude/projects/kairanora",
+			},
+		},
+		Sinks: []sinkapi.Config{{
+			ID:   "stdout",
+			Type: "stdout",
+		}},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected Validate to fail")
+	}
+	for _, want := range []string{
+		"sources[0].root",
+		"sources[1].root",
+		"overlapping source roots can ingest the same files twice",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate error = %v, want mention of %q", err, want)
+		}
+	}
+}
+
+func TestWarningsIncludeSharedDestinationBootstrapRiskWhenStateIsMissing(t *testing.T) {
+	base := t.TempDir()
+	cfg := Config{
+		Version:              "0.1",
+		MachineID:            "machine-123",
+		StatePath:            filepath.Join(base, "state.db"),
+		LedgerPath:           filepath.Join(base, "ledger.db"),
+		PollInterval:         "3s",
+		ErrorBackoff:         "10s",
+		MaxConsecutiveErrors: 10,
+		Sources: []sourceapi.Config{{
+			InstanceID: "codex-local",
+			Type:       "codex_local",
+			Root:       "/tmp/codex",
+		}},
+		Sinks: []sinkapi.Config{{
+			ID:   "shared-archive-s3",
+			Type: "s3",
+		}},
+	}
+
+	warnings := Warnings(cfg)
+	if len(warnings) == 0 {
+		t.Fatal("Warnings() returned no warnings, want shared bootstrap warning")
+	}
+	text := strings.Join(warnings, "\n")
+	for _, want := range []string{
+		"shared sink(s) shared-archive-s3 are configured",
+		"neither state_path nor ledger_path exists yet",
+		"may redeliver historical data",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Warnings() = %q, want mention of %q", text, want)
 		}
 	}
 }

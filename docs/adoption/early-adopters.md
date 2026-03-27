@@ -111,6 +111,9 @@ portable there.
   configs through a private ops repo or template-render step
 - remember that replay-safe sinks are included by default, but append-only sinks
   like JSONL will duplicate output if you explicitly replay to them
+- treat `oas validate` warnings about missing local state on shared sinks as a
+  real bootstrap risk; the first run will ingest whatever history is visible
+  under the configured roots
 - set a `max_storage_bytes` budget if you want the daemon to enforce a hard cap
   on managed files
 - use `oas daemon status` to distinguish lifecycle `state` from `live` and
