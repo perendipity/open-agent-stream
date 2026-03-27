@@ -30,8 +30,14 @@ Machine-local fields:
 
 Shared fields:
 
-- sink `id`, `type`, `event_spec_version`, `settings`, and `delivery`
+- sink `id`, `type`, `event_spec_version`, shared destination settings, and `delivery`
 - shared privacy overrides for that sink
+
+Machine-local auth wiring inside `settings.auth` may still vary per host. In
+practice that means one machine can point at `file:///home/alice/.config/open-agent-stream/aws/credentials`
+while another points at its own local AWS files or secret refs, as long as both
+configs still target the same shared bucket, prefix, key template, and delivery
+behavior.
 
 For serious use, keep those committed configs in a private ops repo or your
 existing infrastructure repo, not in the public OAS source checkout. See

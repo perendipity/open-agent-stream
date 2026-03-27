@@ -67,7 +67,10 @@ For shared destinations across multiple machines:
 
 - set `event_spec_version: "v2"`
 - give each machine its own local `machine_id`, `data_dir`, and source roots
-- keep the sink stanza identical across machines
+- keep the logical sink stanza identical across machines
+- allow machine-local `settings.auth` fields such as `profile`,
+  `credentials_file_ref`, `config_file_ref`, or host-specific secret refs to
+  vary when they point at local credential material
 
 Use `external` when:
 

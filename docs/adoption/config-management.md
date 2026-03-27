@@ -40,14 +40,26 @@ Each machine should have its own values for:
 - source roots
 - any machine-local credential environment
 
-Each machine should keep the same values for the shared destination:
+Each machine should keep the same values for the logical shared destination:
 
 - sink `id`
 - sink `type`
 - sink `event_spec_version`
-- sink `settings`
+- shared destination `settings` such as bucket, region, prefix, format, and key template
 - sink `delivery`
 - matching per-sink privacy overrides
+
+Machine-local auth wiring is the normal exception inside `settings.auth`.
+Fields such as:
+
+- `profile`
+- `credentials_file_ref`
+- `config_file_ref`
+- host-specific secret references
+
+may vary per machine when they point at local AWS files or local secret-manager
+state. Keep the destination behavior the same even if the auth inputs are
+rendered differently per host.
 
 ## Current OAS config reality
 
