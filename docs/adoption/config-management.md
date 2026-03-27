@@ -40,14 +40,26 @@ Each machine should have its own values for:
 - source roots
 - any machine-local credential environment
 
-Each machine should keep the same values for the shared destination:
+Each machine should keep the same values for the logical shared destination:
 
 - sink `id`
 - sink `type`
 - sink `event_spec_version`
-- sink `settings`
+- shared destination `settings` such as bucket, region, prefix, format, and key template
 - sink `delivery`
 - matching per-sink privacy overrides
+
+Machine-local auth wiring is the normal exception inside `settings.auth`.
+Fields such as:
+
+- `profile`
+- `credentials_file_ref`
+- `config_file_ref`
+- host-specific secret references
+
+may vary per machine when they point at local AWS files or local secret-manager
+state. Keep the destination behavior the same even if the auth inputs are
+rendered differently per host.
 
 ## Current OAS config reality
 
@@ -109,9 +121,20 @@ Do not commit secrets into OAS config JSON.
 
 Use:
 
-- environment-variable references for HTTP sinks, such as `bearer_token_env`
-- the normal AWS SDK credential chain for `s3`
+- secret references for HTTP sinks, such as
+  `bearer_token_ref: "env://OAS_REMOTE_TOKEN"` or
+  `bearer_token_ref: "op://vault/oas/collector-token"`
+- `s3` auth in this order:
+  - implicit AWS SDK default chain when `settings.auth` is absent
+  - `settings.auth.mode: "profile"` with a named AWS profile
+  - `settings.auth.mode: "secret_refs"` only when the environment cannot use
+    the first two options
 - machine environment or a secret manager for `command` and `external` sinks
+
+When you use `file://` secret references, point them at machine-local files on
+a local POSIX filesystem with restrictive permissions such as `0600`. Avoid
+repo-relative secret files, shared drives, and cross-mounted paths such as WSL
+`/mnt/c/...` or a symlinked `~/.aws` backed by that mount.
 
 What is usually safe to commit in a private ops repo:
 
@@ -122,13 +145,34 @@ What is usually safe to commit in a private ops repo:
 - delivery timing and retry policy
 - machine IDs
 - source-root patterns
+- AWS profile names
+- secret references such as `env://...`, `op://...`, or `file://...`
 
 What should stay out of committed config:
 
 - bearer tokens
 - AWS access keys
+- AWS session tokens
+- resolved secret values from any provider
 - ad hoc smoke-test configs
 - temporary local-only overrides
+
+Stable secret-reference schemes in v1:
+
+- `env://VAR_NAME`
+- `file:///absolute/path`
+- `op://vault/item/field`
+
+Experimental secret-reference schemes in v1:
+
+- `keychain://service/account`
+- `pass://entry/path`
+
+`file://` is intentionally constrained. Use it for externally managed secret
+files or mounted ephemeral secrets, not as your default secret store. OAS
+rejects world-readable and world-writable secret files, warns on group access
+outside runtime secret directories, and warns when the secret file resolves
+inside the current repo worktree.
 
 ## What to commit to this public repo
 

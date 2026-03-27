@@ -19,6 +19,15 @@ type Store struct {
 	db *sql.DB
 }
 
+type SecretProviderStat struct {
+	SinkID                string
+	Provider              string
+	SuccessfulResolutions int
+	AuthFailures          int
+	ConfigFailures        int
+	UpdatedAt             time.Time
+}
+
 type PendingBatch struct {
 	ID           int64
 	SinkID       string
@@ -135,14 +144,51 @@ func Open(path string) (*Store, error) {
 			successful_batches INTEGER NOT NULL DEFAULT 0,
 			successful_events INTEGER NOT NULL DEFAULT 0,
 			failed_attempts INTEGER NOT NULL DEFAULT 0,
+			retry_failure_attempts INTEGER NOT NULL DEFAULT 0,
+			auth_failure_attempts INTEGER NOT NULL DEFAULT 0,
+			config_failure_attempts INTEGER NOT NULL DEFAULT 0,
+			successful_secret_resolutions INTEGER NOT NULL DEFAULT 0,
 			quarantined_batches INTEGER NOT NULL DEFAULT 0,
+			blocked_kind TEXT,
+			last_auth_error TEXT,
+			last_blocked_error TEXT,
+			blocked_since TEXT,
 			last_terminal_error TEXT,
 			last_success_at TEXT,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS secret_provider_stats (
+			sink_id TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			successful_resolutions INTEGER NOT NULL DEFAULT 0,
+			auth_failures INTEGER NOT NULL DEFAULT 0,
+			config_failures INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (sink_id, provider)
+		);`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+	migrations := []struct {
+		table      string
+		column     string
+		definition string
+	}{
+		{table: "sink_progress", column: "retry_failure_attempts", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "sink_progress", column: "auth_failure_attempts", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "sink_progress", column: "config_failure_attempts", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "sink_progress", column: "successful_secret_resolutions", definition: "INTEGER NOT NULL DEFAULT 0"},
+		{table: "sink_progress", column: "blocked_kind", definition: "TEXT"},
+		{table: "sink_progress", column: "last_auth_error", definition: "TEXT"},
+		{table: "sink_progress", column: "last_blocked_error", definition: "TEXT"},
+		{table: "sink_progress", column: "blocked_since", definition: "TEXT"},
+	}
+	for _, migration := range migrations {
+		if err := ensureColumn(db, migration.table, migration.column, migration.definition); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -155,6 +201,35 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func ensureColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			dataType   string
+			notNull    int
+			defaultVal sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultVal, &primaryKey); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 func (s *Store) GetSourceCheckpoint(sourceID, artifactID string) (sourceapi.Checkpoint, error) {

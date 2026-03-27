@@ -30,8 +30,14 @@ Machine-local fields:
 
 Shared fields:
 
-- sink `id`, `type`, `event_spec_version`, `settings`, and `delivery`
+- sink `id`, `type`, `event_spec_version`, shared destination settings, and `delivery`
 - shared privacy overrides for that sink
+
+Machine-local auth wiring inside `settings.auth` may still vary per host. In
+practice that means one machine can point at `file:///home/alice/.config/open-agent-stream/aws/credentials`
+while another points at its own local AWS files or secret refs, as long as both
+configs still target the same shared bucket, prefix, key template, and delivery
+behavior.
 
 For serious use, keep those committed configs in a private ops repo or your
 existing infrastructure repo, not in the public OAS source checkout. See
@@ -57,6 +63,9 @@ existing infrastructure repo, not in the public OAS source checkout. See
 - prefer bucket-level default encryption
 - keep each machine on its own local ledger/state even if all machines share one bucket prefix
 - keep `event_spec_version: "v2"` on the shared sink so payloads retain host identity
+- when using `settings.auth.mode: "profile"` on Linux or under a service
+  manager, prefer explicit `credentials_file_ref` and `config_file_ref` so the
+  named profile does not depend on ambient `AWS_PROFILE` or `HOME`
 
 ## Recommended source roots
 
@@ -73,9 +82,24 @@ subtrees first and widen them later.
 
 ## Service management
 
-- Linux `systemd`: start from [`/packaging/systemd/oas.service`](../../packaging/systemd/oas.service)
-- macOS `launchd`: start from [`/packaging/launchd/dev.open-agent-stream.oas.plist`](../../packaging/launchd/dev.open-agent-stream.oas.plist)
+For the simplest machine-local continuous mode, use:
+
+```bash
+oas daemon start -config /path/to/oas.json
+oas daemon status -config /path/to/oas.json
+```
+
+Use an external service manager only when you need restart-on-boot or existing
+supervisor integration:
+
+- Linux `systemd`: start from [`/packaging/systemd/oas.service`](../../packaging/systemd/oas.service), which runs `oas daemon run`
+- macOS `launchd`: start from [`/packaging/launchd/dev.open-agent-stream.oas.plist`](../../packaging/launchd/dev.open-agent-stream.oas.plist), which runs `oas daemon run`
 - other environments: run `oas daemon run` under your existing supervisor
+
+For `s3` profile auth, run OAS as the same user that owns the AWS shared config
+files. In minimal service-manager environments, prefer explicit
+`credentials_file_ref` and `config_file_ref` in the sink config over ambient
+`AWS_PROFILE`.
 
 ## Validation before enabling continuous mode
 

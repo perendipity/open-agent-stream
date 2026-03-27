@@ -239,7 +239,7 @@ portable there.
 Built-in remote sinks use two config blocks:
 
 - `settings`: sink-specific destination fields such as URL, headers, bucket,
-  key templates, argv, and env-var references for credentials
+  key templates, argv, and secret references for credentials
 - `delivery`: timing and retry policy such as batch size, batch age, fixed
   release windows, retry backoff, and poison-batch thresholds
 
@@ -268,7 +268,7 @@ A minimal `http` sink looks like:
     "url": "https://collector.example.invalid/ingest",
     "method": "POST",
     "format": "oas_batch_json",
-    "bearer_token_env": "OAS_REMOTE_TOKEN"
+    "bearer_token_ref": "env://OAS_REMOTE_TOKEN"
   },
   "delivery": {
     "max_batch_events": 100,

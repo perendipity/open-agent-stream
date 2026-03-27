@@ -44,6 +44,21 @@ type PermanentError struct {
 	Err error
 }
 
+type BlockedKind string
+
+const (
+	BlockedKindAuth   BlockedKind = "auth"
+	BlockedKindConfig BlockedKind = "config"
+)
+
+type BlockedError struct {
+	Kind           BlockedKind
+	Code           string
+	Provider       string
+	RefFingerprint string
+	Err            error
+}
+
 func (e *PermanentError) Error() string {
 	if e == nil || e.Err == nil {
 		return "permanent delivery failure"
@@ -52,6 +67,15 @@ func (e *PermanentError) Error() string {
 }
 
 func (e *PermanentError) Unwrap() error { return e.Err }
+
+func (e *BlockedError) Error() string {
+	if e == nil || e.Err == nil {
+		return "blocked delivery failure"
+	}
+	return e.Err.Error()
+}
+
+func (e *BlockedError) Unwrap() error { return e.Err }
 
 type SinkStatus struct {
 	Summary state.DeliverySummary
@@ -163,15 +187,27 @@ func (m *Manager) DispatchDue(ctx context.Context) (int, error) {
 			errs = append(errs, err)
 			continue
 		}
-		sendErr := m.sendPrepared(ctx, entry, prepared)
+		result, sendErr := m.sendPrepared(ctx, entry, prepared)
 		if sendErr == nil {
 			if err := m.state.MarkDeliveryBatchSucceeded(batch.BatchID, time.Now().UTC()); err != nil {
 				errs = append(errs, err)
+			}
+			if len(result.AuthMetrics) > 0 {
+				if err := m.state.RecordSecretResolutions(batch.SinkID, result.AuthMetrics, time.Now().UTC()); err != nil {
+					errs = append(errs, err)
+				}
 			}
 			delivered += batch.EventCount
 			continue
 		}
 		nextAttempt := m.nextAttemptAt(entry.cfg.Delivery, batch.AttemptCount+1, time.Now().UTC())
+		var blockedErr *BlockedError
+		if errors.As(sendErr, &blockedErr) {
+			if err := m.state.MarkDeliveryBatchBlocked(batch.BatchID, string(blockedErr.Kind), blockedErr.Code, blockedErr.Provider, sendErr.Error(), nextAttempt, time.Now().UTC()); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
 		var permanentErr *PermanentError
 		permanent := errors.As(sendErr, &permanentErr)
 		reachedMaxAttempts := entry.cfg.Delivery.MaxAttempts > 0 && batch.AttemptCount+1 >= entry.cfg.Delivery.MaxAttempts
@@ -355,17 +391,15 @@ func sealForSink(ctx context.Context, entry sinkEntry, batch sinkapi.Batch, meta
 	return meta, nil
 }
 
-func (m *Manager) sendPrepared(ctx context.Context, entry sinkEntry, prepared PreparedDispatch) error {
+func (m *Manager) sendPrepared(ctx context.Context, entry sinkEntry, prepared PreparedDispatch) (sinkapi.Result, error) {
 	if entry.prepared != nil {
-		_, err := entry.prepared.SendPrepared(ctx, prepared)
-		return err
+		return entry.prepared.SendPrepared(ctx, prepared)
 	}
 	var batch sinkapi.Batch
 	if err := json.Unmarshal(prepared.Payload, &batch); err != nil {
-		return err
+		return sinkapi.Result{}, err
 	}
-	_, err := entry.sink.SendBatch(ctx, batch)
-	return err
+	return entry.sink.SendBatch(ctx, batch)
 }
 
 func (m *Manager) nextAttemptAt(cfg sinkapi.DeliveryConfig, attempts int, now time.Time) time.Time {
@@ -408,6 +442,19 @@ func NewPermanentError(err error) error {
 		return nil
 	}
 	return &PermanentError{Err: err}
+}
+
+func NewBlockedError(kind BlockedKind, code, provider, refFingerprint string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &BlockedError{
+		Kind:           kind,
+		Code:           code,
+		Provider:       provider,
+		RefFingerprint: refFingerprint,
+		Err:            err,
+	}
 }
 
 func BuildReplayCheckpoint(batch sinkapi.Batch, sinkID string) schema.SinkCheckpoint {

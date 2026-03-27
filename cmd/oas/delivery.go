@@ -72,7 +72,7 @@ func deliveryStatusCommand(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas delivery status -config <path> [flags]
 
-Show per-sink delivery queue, retry, and quarantine state without requiring daemon mode.
+	Show per-sink delivery queue, retry, blocked, and quarantine state without requiring daemon mode.
 
 `)
 		printFlagSection(os.Stderr, fs, "Common flags", usageFlag{Name: "config", Placeholder: "<path>"})
@@ -104,13 +104,13 @@ func deliveryListCommand(args []string) {
 	fs := flag.NewFlagSet("delivery list", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config JSON")
 	sinkID := fs.String("sink", "", "restrict results to one sink id")
-	statusesFlag := fs.String("status", "", "comma-separated statuses: pending,retrying,quarantined")
+	statusesFlag := fs.String("status", "", "comma-separated statuses: pending,retrying,blocked,quarantined")
 	limit := fs.Int("limit", 50, "maximum number of batches to return")
 	jsonOutput := fs.Bool("json", false, "print structured JSON instead of a table")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas delivery list -config <path> [flags]
 
-List sealed delivery batches that are pending, retrying, or quarantined.
+List sealed delivery batches that are pending, retrying, blocked, or quarantined.
 
 `)
 		printFlagSection(os.Stderr, fs, "Common flags",
@@ -118,7 +118,7 @@ List sealed delivery batches that are pending, retrying, or quarantined.
 		)
 		printFlagSection(os.Stderr, fs, "Advanced flags",
 			usageFlag{Name: "sink", Placeholder: "<id>"},
-			usageFlag{Name: "status", Placeholder: "<pending,retrying,quarantined>"},
+			usageFlag{Name: "status", Placeholder: "<pending,retrying,blocked,quarantined>"},
 			usageFlag{Name: "limit", Placeholder: "<n>"},
 			usageFlag{Name: "json"},
 		)
@@ -165,7 +165,7 @@ func deliveryInspectCommand(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas delivery inspect -config <path> -batch <id> [flags]
 
-Inspect one sealed delivery batch, including its immutable metadata and terminal error state.
+Inspect one sealed delivery batch, including its immutable metadata and current error state.
 
 `)
 		printFlagSection(os.Stderr, fs, "Common flags",
@@ -250,8 +250,8 @@ func writeDeliveryUsage(writer io.Writer) {
 	fmt.Fprintf(writer, `usage: oas delivery <subcommand> -config <path>
 
 Subcommands:
-  status    Show per-sink delivery queue and watermark state
-  list      List pending, retrying, or quarantined delivery batches
+  status    Show per-sink delivery queue, blocked state, and watermarks
+  list      List pending, retrying, blocked, or quarantined delivery batches
   inspect   Inspect one sealed delivery batch
   retry     Requeue one quarantined delivery batch
 
@@ -299,7 +299,7 @@ func parseDeliveryStatuses(raw string) ([]string, error) {
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		switch value {
-		case state.DeliveryBatchStatusPending, state.DeliveryBatchStatusRetrying, state.DeliveryBatchStatusQuarantined:
+		case state.DeliveryBatchStatusPending, state.DeliveryBatchStatusRetrying, state.DeliveryBatchStatusBlocked, state.DeliveryBatchStatusQuarantined:
 		default:
 			return nil, fmt.Errorf("unsupported delivery status %q", value)
 		}

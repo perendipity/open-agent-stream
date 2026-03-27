@@ -86,7 +86,7 @@ Subcommands:
   run       Run the daemon in the foreground
   start     Start a detached daemon
   stop      Stop a detached daemon
-  status    Show daemon/runtime status, resolved paths, and storage activity
+  status    Show daemon/runtime status, delivery blockage signals, resolved paths, and storage activity
   restart   Restart a detached daemon
 
 Examples:
@@ -111,8 +111,8 @@ func TestWriteDeliveryUsageSnapshot(t *testing.T) {
 	const want = `usage: oas delivery <subcommand> -config <path>
 
 Subcommands:
-  status    Show per-sink delivery queue and watermark state
-  list      List pending, retrying, or quarantined delivery batches
+  status    Show per-sink delivery queue, blocked state, and watermarks
+  list      List pending, retrying, blocked, or quarantined delivery batches
   inspect   Inspect one sealed delivery batch
   retry     Requeue one quarantined delivery batch
 

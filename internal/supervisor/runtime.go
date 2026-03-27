@@ -21,6 +21,8 @@ import (
 	"github.com/open-agent-stream/open-agent-stream/internal/normalize"
 	"github.com/open-agent-stream/open-agent-stream/internal/redact"
 	"github.com/open-agent-stream/open-agent-stream/internal/router"
+	"github.com/open-agent-stream/open-agent-stream/internal/secretref"
+	"github.com/open-agent-stream/open-agent-stream/internal/sinkauth"
 	"github.com/open-agent-stream/open-agent-stream/internal/sinkmeta"
 	"github.com/open-agent-stream/open-agent-stream/internal/sinkutil"
 	"github.com/open-agent-stream/open-agent-stream/internal/state"
@@ -327,6 +329,10 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 	for _, source := range r.cfg.Sources {
 		checks = append(checks, health.CheckReadablePath(ctx, "source:"+source.InstanceID, source.Root))
 	}
+	worktreeRoot := ""
+	if cwd, err := os.Getwd(); err == nil {
+		worktreeRoot = secretref.FindWorktreeRoot(cwd)
+	}
 	for _, sinkCfg := range r.cfg.Sinks {
 		info := sinkmeta.InfoForConfig(sinkCfg)
 		defaultReplay := "skip"
@@ -335,17 +341,39 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 		}
 		detail := fmt.Sprintf("type=%s replay_class=%s default_replay=%s", sinkCfg.Type, info.ReplayClass, defaultReplay)
 		if summary, ok := deliveryStatus[sinkCfg.ID]; ok {
-			detail += fmt.Sprintf(" queue_depth=%d ready_batches=%d retrying_batches=%d quarantined_batches=%d acked_offset=%d terminal_offset=%d gaps=%d",
+			detail += fmt.Sprintf(" queue_depth=%d ready_batches=%d retrying_batches=%d blocked_batches=%d quarantined_batches=%d acked_offset=%d terminal_offset=%d gaps=%d",
 				summary.Summary.QueueDepth,
 				summary.Summary.ReadyBatchCount,
 				summary.Summary.RetryingBatchCount,
+				summary.Summary.BlockedBatchCount,
 				summary.Summary.QuarantinedBatchCount,
 				summary.Summary.AckedContiguousOffset,
 				summary.Summary.TerminalContiguousOffset,
 				summary.Summary.GapCount,
 			)
+			if summary.Summary.BlockedKind != "" {
+				detail += fmt.Sprintf(" blocked_kind=%q", summary.Summary.BlockedKind)
+			}
+			if summary.Summary.LastBlockedError != "" {
+				detail += fmt.Sprintf(" last_blocked_error=%q", summary.Summary.LastBlockedError)
+			}
+			if summary.Summary.LastAuthError != "" {
+				detail += fmt.Sprintf(" last_auth_error=%q", summary.Summary.LastAuthError)
+			}
 			if summary.Summary.LastTerminalError != "" {
 				detail += fmt.Sprintf(" last_terminal_error=%q", summary.Summary.LastTerminalError)
+			}
+			if len(summary.Summary.SecretProviderStats) > 0 {
+				var providers []string
+				for _, stat := range summary.Summary.SecretProviderStats {
+					providers = append(providers, fmt.Sprintf("%s(resolutions=%d auth_failures=%d config_failures=%d)",
+						stat.Provider,
+						stat.SuccessfulResolutions,
+						stat.AuthFailures,
+						stat.ConfigFailures,
+					))
+				}
+				detail += " secret_providers=" + strings.Join(providers, ",")
 			}
 		}
 		checks = append(checks, health.Check{
@@ -353,6 +381,11 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 			Status: "ok",
 			Detail: detail,
 		})
+		authChecks, err := sinkauth.StaticChecks(ctx, sinkCfg, worktreeRoot)
+		if err != nil {
+			return nil, err
+		}
+		checks = append(checks, authChecks...)
 		if path := sinkCfg.Options["path"]; path != "" {
 			checks = append(checks, health.CheckWritablePath(ctx, "sink-path:"+sinkCfg.ID, path))
 		}

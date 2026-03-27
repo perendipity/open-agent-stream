@@ -22,10 +22,7 @@ jobs:
         go-version-file: go.mod
 
     - name: Build
-      run: go build -v ./...
-
-    - name: Test
-      run: go test -v ./...
+      run: scripts/ci_go.sh
 
   cli-smoke:
     runs-on: ubuntu-latest

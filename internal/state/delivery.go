@@ -21,6 +21,7 @@ const (
 
 	DeliveryBatchStatusPending     = "pending"
 	DeliveryBatchStatusRetrying    = "retrying"
+	DeliveryBatchStatusBlocked     = "blocked"
 	DeliveryBatchStatusQuarantined = "quarantined"
 )
 
@@ -55,26 +56,36 @@ type DeliveryBatch struct {
 }
 
 type DeliverySummary struct {
-	SinkID                   string
-	QueueDepth               int
-	ReadyBatchCount          int
-	RetryingBatchCount       int
-	QuarantinedBatchCount    int
-	OldestPendingAt          time.Time
-	NextAttemptAt            time.Time
-	AckedContiguousOffset    int64
-	TerminalContiguousOffset int64
-	GapCount                 int
-	SuccessfulBatches        int
-	SuccessfulEvents         int
-	FailedAttempts           int
-	QuarantinedBatches       int
-	LastTerminalError        string
-	EventsLastMinute         int
-	AttemptsLastMinute       int
-	SuccessesLastMinute      int
-	AvgBatchEventsLastMinute float64
-	MaxBatchEventsLastMinute int
+	SinkID                      string
+	QueueDepth                  int
+	ReadyBatchCount             int
+	RetryingBatchCount          int
+	BlockedBatchCount           int
+	BlockedKind                 string
+	QuarantinedBatchCount       int
+	OldestPendingAt             time.Time
+	NextAttemptAt               time.Time
+	BlockedSince                time.Time
+	AckedContiguousOffset       int64
+	TerminalContiguousOffset    int64
+	GapCount                    int
+	SuccessfulBatches           int
+	SuccessfulEvents            int
+	FailedAttempts              int
+	RetryFailureAttempts        int
+	AuthFailureAttempts         int
+	ConfigFailureAttempts       int
+	SuccessfulSecretResolutions int
+	QuarantinedBatches          int
+	LastAuthError               string
+	LastBlockedError            string
+	LastTerminalError           string
+	EventsLastMinute            int
+	AttemptsLastMinute          int
+	SuccessesLastMinute         int
+	AvgBatchEventsLastMinute    float64
+	MaxBatchEventsLastMinute    int
+	SecretProviderStats         []SecretProviderStat
 }
 
 func (s *Store) EnsureSinkProgress(sinkID string) error {
@@ -185,11 +196,12 @@ func (s *Store) ListDueDeliveryBatches(now time.Time, limit int) ([]DeliveryBatc
 		`SELECT batch_id, sink_id, prepared_json, payload_bytes, ledger_min_offset, ledger_max_offset, event_count,
 		        status, attempt_count, next_attempt_at, COALESCE(last_error, ''), created_at, updated_at
 		 FROM delivery_batches
-		 WHERE status IN (?, ?) AND next_attempt_at <= ?
+		 WHERE status IN (?, ?, ?) AND next_attempt_at <= ?
 		 ORDER BY next_attempt_at ASC, created_at ASC
 		 LIMIT ?`,
 		DeliveryBatchStatusPending,
 		DeliveryBatchStatusRetrying,
+		DeliveryBatchStatusBlocked,
 		now.UTC().Format(time.RFC3339Nano),
 		limit,
 	)
@@ -294,12 +306,98 @@ func (s *Store) MarkDeliveryBatchRetry(batchID, lastError string, nextAttemptAt,
 		}
 		_, err = tx.Exec(
 			`UPDATE sink_progress
-			 SET failed_attempts = failed_attempts + 1, updated_at = ?
+			 SET failed_attempts = failed_attempts + 1,
+			     retry_failure_attempts = retry_failure_attempts + 1,
+			     updated_at = ?
 			 WHERE sink_id = ?`,
 			updatedAt.UTC().Format(time.RFC3339Nano),
 			batch.SinkID,
 		)
 		return err
+	})
+}
+
+func (s *Store) MarkDeliveryBatchBlocked(batchID, blockedKind, code, provider, lastError string, nextAttemptAt, updatedAt time.Time) error {
+	return withTx(s.db, func(tx *sql.Tx) error {
+		batch, err := getDeliveryBatchTx(tx, batchID)
+		if err != nil {
+			return err
+		}
+		blockedSince := updatedAt.UTC().Format(time.RFC3339Nano)
+		var existingBlockedSince string
+		if err := tx.QueryRow(`SELECT COALESCE(blocked_since, '') FROM sink_progress WHERE sink_id = ?`, batch.SinkID).Scan(&existingBlockedSince); err != nil {
+			return err
+		}
+		if existingBlockedSince != "" {
+			blockedSince = existingBlockedSince
+		}
+		if _, err := tx.Exec(
+			`UPDATE delivery_batches
+			 SET status = ?, attempt_count = attempt_count + 1, next_attempt_at = ?, last_error = ?, updated_at = ?
+			 WHERE batch_id = ?`,
+			DeliveryBatchStatusBlocked,
+			nextAttemptAt.UTC().Format(time.RFC3339Nano),
+			lastError,
+			updatedAt.UTC().Format(time.RFC3339Nano),
+			batchID,
+		); err != nil {
+			return err
+		}
+		outcome := "blocked_" + blockedKind
+		if err := recordDeliveryAttemptTx(tx, batch.SinkID, batchID, outcome, batch.EventCount, batch.PayloadBytes, updatedAt); err != nil {
+			return err
+		}
+		switch blockedKind {
+		case "auth":
+			if _, err := tx.Exec(
+				`UPDATE sink_progress
+				 SET failed_attempts = failed_attempts + 1,
+				     auth_failure_attempts = auth_failure_attempts + 1,
+				     blocked_kind = ?,
+				     last_auth_error = ?,
+				     last_blocked_error = ?,
+				     blocked_since = ?,
+				     updated_at = ?
+				 WHERE sink_id = ?`,
+				blockedKind,
+				lastError,
+				lastError,
+				blockedSince,
+				updatedAt.UTC().Format(time.RFC3339Nano),
+				batch.SinkID,
+			); err != nil {
+				return err
+			}
+			if provider != "" {
+				if err := updateSecretProviderStatsTx(tx, batch.SinkID, provider, 0, 1, 0, updatedAt); err != nil {
+					return err
+				}
+			}
+		default:
+			if _, err := tx.Exec(
+				`UPDATE sink_progress
+				 SET failed_attempts = failed_attempts + 1,
+				     config_failure_attempts = config_failure_attempts + 1,
+				     blocked_kind = ?,
+				     last_blocked_error = ?,
+				     blocked_since = ?,
+				     updated_at = ?
+				 WHERE sink_id = ?`,
+				blockedKind,
+				lastError,
+				blockedSince,
+				updatedAt.UTC().Format(time.RFC3339Nano),
+				batch.SinkID,
+			); err != nil {
+				return err
+			}
+			if provider != "" {
+				if err := updateSecretProviderStatsTx(tx, batch.SinkID, provider, 0, 0, 1, updatedAt); err != nil {
+					return err
+				}
+			}
+		}
+		return refreshSinkProgressTx(tx, batch.SinkID, updatedAt)
 	})
 }
 
@@ -386,6 +484,44 @@ func (s *Store) QuarantineDeliveryBatch(batchID, lastError string, updatedAt tim
 	})
 }
 
+func (s *Store) RecordSecretResolutions(sinkID string, metrics []sinkapi.AuthMetric, updatedAt time.Time) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+	return withTx(s.db, func(tx *sql.Tx) error {
+		if err := ensureSinkProgressTx(tx, sinkID, updatedAt); err != nil {
+			return err
+		}
+		total := 0
+		for _, metric := range metrics {
+			count := metric.ResolvedSecretCount
+			if count <= 0 {
+				count = 1
+			}
+			total += count
+			if metric.Provider == "" {
+				continue
+			}
+			if err := updateSecretProviderStatsTx(tx, sinkID, metric.Provider, count, 0, 0, updatedAt); err != nil {
+				return err
+			}
+		}
+		if total == 0 {
+			return nil
+		}
+		_, err := tx.Exec(
+			`UPDATE sink_progress
+			 SET successful_secret_resolutions = successful_secret_resolutions + ?,
+			     updated_at = ?
+			 WHERE sink_id = ?`,
+			total,
+			updatedAt.UTC().Format(time.RFC3339Nano),
+			sinkID,
+		)
+		return err
+	})
+}
+
 func (s *Store) DeliverySummary(sinkID string, now time.Time) (DeliverySummary, error) {
 	var summary DeliverySummary
 	summary.SinkID = sinkID
@@ -394,12 +530,15 @@ func (s *Store) DeliverySummary(sinkID string, now time.Time) (DeliverySummary, 
 	}
 	row := s.db.QueryRow(
 		`SELECT acked_contiguous_offset, terminal_contiguous_offset, gap_count,
-		        successful_batches, successful_events, failed_attempts, quarantined_batches,
-		        COALESCE(last_terminal_error, '')
+		        successful_batches, successful_events, failed_attempts, retry_failure_attempts,
+		        auth_failure_attempts, config_failure_attempts, successful_secret_resolutions,
+		        quarantined_batches, COALESCE(blocked_kind, ''), COALESCE(last_auth_error, ''),
+		        COALESCE(last_blocked_error, ''), COALESCE(blocked_since, ''), COALESCE(last_terminal_error, '')
 		 FROM sink_progress
 		 WHERE sink_id = ?`,
 		sinkID,
 	)
+	var blockedSinceRaw string
 	if err := row.Scan(
 		&summary.AckedContiguousOffset,
 		&summary.TerminalContiguousOffset,
@@ -407,15 +546,24 @@ func (s *Store) DeliverySummary(sinkID string, now time.Time) (DeliverySummary, 
 		&summary.SuccessfulBatches,
 		&summary.SuccessfulEvents,
 		&summary.FailedAttempts,
+		&summary.RetryFailureAttempts,
+		&summary.AuthFailureAttempts,
+		&summary.ConfigFailureAttempts,
+		&summary.SuccessfulSecretResolutions,
 		&summary.QuarantinedBatches,
+		&summary.BlockedKind,
+		&summary.LastAuthError,
+		&summary.LastBlockedError,
+		&blockedSinceRaw,
 		&summary.LastTerminalError,
 	); err != nil {
 		return summary, err
 	}
 	row = s.db.QueryRow(
-		`SELECT COALESCE(SUM(CASE WHEN status IN (?, ?) THEN 1 ELSE 0 END), 0),
-		        COALESCE(MIN(CASE WHEN status IN (?, ?) THEN created_at END), ''),
-		        COALESCE(MIN(CASE WHEN status IN (?, ?) THEN next_attempt_at END), ''),
+		`SELECT COALESCE(SUM(CASE WHEN status IN (?, ?, ?) THEN 1 ELSE 0 END), 0),
+		        COALESCE(MIN(CASE WHEN status IN (?, ?, ?) THEN created_at END), ''),
+		        COALESCE(MIN(CASE WHEN status IN (?, ?, ?) THEN next_attempt_at END), ''),
+		        COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
 		        COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
 		        COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0),
 		        COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0)
@@ -423,12 +571,16 @@ func (s *Store) DeliverySummary(sinkID string, now time.Time) (DeliverySummary, 
 		 WHERE sink_id = ?`,
 		DeliveryBatchStatusPending,
 		DeliveryBatchStatusRetrying,
+		DeliveryBatchStatusBlocked,
 		DeliveryBatchStatusPending,
 		DeliveryBatchStatusRetrying,
+		DeliveryBatchStatusBlocked,
 		DeliveryBatchStatusPending,
 		DeliveryBatchStatusRetrying,
+		DeliveryBatchStatusBlocked,
 		DeliveryBatchStatusPending,
 		DeliveryBatchStatusRetrying,
+		DeliveryBatchStatusBlocked,
 		DeliveryBatchStatusQuarantined,
 		sinkID,
 	)
@@ -439,6 +591,7 @@ func (s *Store) DeliverySummary(sinkID string, now time.Time) (DeliverySummary, 
 		&nextAttemptRaw,
 		&summary.ReadyBatchCount,
 		&summary.RetryingBatchCount,
+		&summary.BlockedBatchCount,
 		&summary.QuarantinedBatchCount,
 	); err != nil {
 		return summary, err
@@ -449,6 +602,17 @@ func (s *Store) DeliverySummary(sinkID string, now time.Time) (DeliverySummary, 
 	if nextAttemptRaw != "" {
 		summary.NextAttemptAt, _ = time.Parse(time.RFC3339Nano, nextAttemptRaw)
 	}
+	if blockedSinceRaw != "" && summary.BlockedBatchCount > 0 {
+		summary.BlockedSince, _ = time.Parse(time.RFC3339Nano, blockedSinceRaw)
+	}
+	if summary.BlockedBatchCount == 0 {
+		summary.BlockedKind = ""
+	}
+	providerStats, err := s.ListSecretProviderStats(sinkID)
+	if err != nil {
+		return summary, err
+	}
+	summary.SecretProviderStats = providerStats
 	cutoff := now.Add(-1 * time.Minute).UTC().Format(time.RFC3339Nano)
 	row = s.db.QueryRow(
 		`SELECT COALESCE(SUM(event_count), 0),
@@ -471,6 +635,40 @@ func (s *Store) DeliverySummary(sinkID string, now time.Time) (DeliverySummary, 
 		return summary, err
 	}
 	return summary, nil
+}
+
+func (s *Store) ListSecretProviderStats(sinkID string) ([]SecretProviderStat, error) {
+	rows, err := s.db.Query(
+		`SELECT sink_id, provider, successful_resolutions, auth_failures, config_failures, updated_at
+		 FROM secret_provider_stats
+		 WHERE sink_id = ?
+		 ORDER BY provider ASC`,
+		sinkID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stats []SecretProviderStat
+	for rows.Next() {
+		var (
+			stat       SecretProviderStat
+			updatedRaw string
+		)
+		if err := rows.Scan(
+			&stat.SinkID,
+			&stat.Provider,
+			&stat.SuccessfulResolutions,
+			&stat.AuthFailures,
+			&stat.ConfigFailures,
+			&updatedRaw,
+		); err != nil {
+			return nil, err
+		}
+		stat.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedRaw)
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
 }
 
 func (s *Store) MinimumSinkTerminalOffset() (int64, bool, error) {
@@ -518,11 +716,24 @@ func refreshSinkProgressTx(tx *sql.Tx, sinkID string, updatedAt time.Time) error
 	}
 	if _, err := tx.Exec(
 		`UPDATE sink_progress
-		 SET acked_contiguous_offset = ?, terminal_contiguous_offset = ?, gap_count = ?, updated_at = ?
+		 SET acked_contiguous_offset = ?, terminal_contiguous_offset = ?, gap_count = ?,
+		     blocked_kind = CASE
+		         WHEN EXISTS (SELECT 1 FROM delivery_batches WHERE sink_id = ? AND status = ?) THEN blocked_kind
+		         ELSE ''
+		     END,
+		     blocked_since = CASE
+		         WHEN EXISTS (SELECT 1 FROM delivery_batches WHERE sink_id = ? AND status = ?) THEN blocked_since
+		         ELSE ''
+		     END,
+		     updated_at = ?
 		 WHERE sink_id = ?`,
 		nextAcked,
 		nextTerminal,
 		gapCount,
+		sinkID,
+		DeliveryBatchStatusBlocked,
+		sinkID,
+		DeliveryBatchStatusBlocked,
 		updatedAt.UTC().Format(time.RFC3339Nano),
 		sinkID,
 	); err != nil {
@@ -660,6 +871,26 @@ func recordDeliveryAttemptTx(tx *sql.Tx, sinkID, batchID, outcome string, eventC
 		eventCount,
 		payloadBytes,
 		attemptedAt.UTC().Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func updateSecretProviderStatsTx(tx *sql.Tx, sinkID, provider string, successfulResolutions, authFailures, configFailures int, updatedAt time.Time) error {
+	_, err := tx.Exec(
+		`INSERT INTO secret_provider_stats (
+			sink_id, provider, successful_resolutions, auth_failures, config_failures, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(sink_id, provider) DO UPDATE SET
+			successful_resolutions = secret_provider_stats.successful_resolutions + excluded.successful_resolutions,
+			auth_failures = secret_provider_stats.auth_failures + excluded.auth_failures,
+			config_failures = secret_provider_stats.config_failures + excluded.config_failures,
+			updated_at = excluded.updated_at`,
+		sinkID,
+		provider,
+		successfulResolutions,
+		authFailures,
+		configFailures,
+		updatedAt.UTC().Format(time.RFC3339Nano),
 	)
 	return err
 }

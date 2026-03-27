@@ -17,7 +17,7 @@ The stock runtime includes these built-in remote-capable sinks:
 Remote sinks use two config blocks:
 
 - `settings`: destination-specific data such as URLs, headers, bucket names,
-  key templates, argv arrays, and env-var references for credentials
+  key templates, argv arrays, and secret references for credentials
 - `delivery`: batching and retry policy such as batch size, batch age, fixed
   release windows, backoff, max attempts, and poison-batch thresholds
 
@@ -27,13 +27,15 @@ reuse the same sealed payload bytes and destination identity.
 
 Practical implications:
 
-- inject secrets through env-var references such as `bearer_token_env` rather
-  than hard-coding them into the config
+- inject secrets through secret references such as `bearer_token_ref:
+  "env://OAS_REMOTE_TOKEN"` rather than hard-coding them into the config
 - use deterministic S3 keys so retries reuse the same object key
 - expect `http`, `command`, and `webhook` replay to stay disabled by default
 - expect `external` replay to stay disabled by default because the plugin may
   trigger side effects
 - expect `s3` replay to stay disabled by default because it is append-only
+- expect auth or secret-provider outages to block delivery and retry in place
+  rather than quarantining good payloads
 
 For serious use, keep the live config outside the `open-agent-stream` repo
 checkout and manage it through a private ops repo or template-render workflow.
@@ -44,7 +46,7 @@ See [`config-management.md`](config-management.md).
 Use `http` when:
 
 - you want to POST OAS-native batches to a service you control
-- you need header-based auth or token injection from an environment variable
+- you need header-based auth or token injection from a secret reference
 - you want near-real-time delivery with small batches
 
 Use `command` when:
@@ -65,7 +67,10 @@ For shared destinations across multiple machines:
 
 - set `event_spec_version: "v2"`
 - give each machine its own local `machine_id`, `data_dir`, and source roots
-- keep the sink stanza identical across machines
+- keep the logical sink stanza identical across machines
+- allow machine-local `settings.auth` fields such as `profile`,
+  `credentials_file_ref`, `config_file_ref`, or host-specific secret refs to
+  vary when they point at local credential material
 
 Use `external` when:
 
@@ -83,7 +88,7 @@ Use `external` when:
     "url": "https://collector.example.invalid/ingest",
     "method": "POST",
     "format": "oas_batch_json",
-    "bearer_token_env": "OAS_REMOTE_TOKEN",
+    "bearer_token_ref": "env://OAS_REMOTE_TOKEN",
     "headers": {
       "X-OAS-Source": "dev-laptop"
     }
@@ -104,9 +109,21 @@ Useful `http` settings:
 - `method`
 - `format`: `oas_batch_json` or `canonical_jsonl`
 - `headers`
-- `bearer_token_env`
+- `bearer_token_ref`
+- `bearer_token_env`: legacy compatibility alias for `env://...`
 - `timeout`
 - `success_statuses`, `retry_on_statuses`, `permanent_on_statuses`
+
+Supported secret-reference schemes for `http` and `webhook`:
+
+- stable: `env://VAR_NAME`, `file:///absolute/path`, `op://vault/item/field`
+- experimental: `keychain://service/account`, `pass://entry/path`
+
+Use `file://` only for externally managed secret files or mounted ephemeral
+secrets. OAS requires absolute paths, resolves symlinks before use, rejects
+world-accessible files, warns on group-readable files outside runtime secret
+directories, and warns when the secret file resolves inside the current repo
+worktree.
 
 ## Command example
 
@@ -161,9 +178,13 @@ directly.
     "bucket": "oas-example-bucket",
     "region": "us-west-2",
     "prefix": "collector/",
-    "key_template": "{prefix}{sink_id}/{batch_id}.jsonl.gz",
+    "key_template": "{prefix}{sink_id}/{batch_id}-{payload_sha256}.jsonl.gz",
     "storage_class": "STANDARD",
-    "server_side_encryption": "AES256"
+    "server_side_encryption": "AES256",
+    "auth": {
+      "mode": "profile",
+      "profile": "oas-shared"
+    }
   },
   "delivery": {
     "max_batch_events": 1000,
@@ -193,6 +214,116 @@ For a shared bucket across several machines, prefer:
 
 That combination preserves host identity in the payload and keeps retries
 deterministic at the object-key level.
+
+## S3 auth modes
+
+If `settings.auth` is absent, OAS preserves the current AWS SDK behavior and
+uses the default credential chain.
+
+If `settings.auth` is present, `mode` is required and OAS does not fall back
+implicitly. Supported modes are:
+
+- `default_chain`: explicit opt-in to the AWS SDK default chain
+- `profile`: use a named AWS profile, with optional `credentials_file_ref` and
+  `config_file_ref`
+- `secret_refs`: resolve `access_key_id_ref`, `secret_access_key_ref`, and
+  optional `session_token_ref`
+
+Recommended preference order for `s3`:
+
+1. implicit default chain or `settings.auth.mode: "default_chain"`
+2. `settings.auth.mode: "profile"`
+3. `settings.auth.mode: "secret_refs"` only when the environment cannot use
+   the first two options
+
+Example `secret_refs` block:
+
+```json
+{
+  "auth": {
+    "mode": "secret_refs",
+    "access_key_id_ref": "env://OAS_S3_ACCESS_KEY_ID",
+    "secret_access_key_ref": "env://OAS_S3_SECRET_ACCESS_KEY",
+    "session_token_ref": "env://OAS_S3_SESSION_TOKEN"
+  }
+}
+```
+
+If you are moving an existing machine off implicit `aws login` or other default
+chain behavior, the shortest migration is to pin the sink to a named profile:
+
+```json
+{
+  "auth": {
+    "mode": "profile",
+    "profile": "oas-shared-archive-s3"
+  }
+}
+```
+
+That keeps OAS off the ambient default profile and makes the credential source
+explicit without putting keys into OAS JSON.
+
+For Linux or other service-managed installs, prefer pinning the AWS shared
+config files too instead of relying on ambient `AWS_PROFILE` or `HOME`:
+
+```json
+{
+  "auth": {
+    "mode": "profile",
+    "profile": "oas-shared-archive-s3",
+    "credentials_file_ref": "file:///home/USER/.aws/credentials",
+    "config_file_ref": "file:///home/USER/.aws/config"
+  }
+}
+```
+
+That keeps `oas doctor`, `oas daemon run`, and service-manager launches on the
+same named profile even when the process environment is minimal or the working
+directory changes. Run OAS as the same user that owns those AWS files.
+
+For a new machine-local OAS profile, a dedicated directory is often less
+fragile than reusing ambient `~/.aws`:
+
+```json
+{
+  "auth": {
+    "mode": "profile",
+    "profile": "oas-shared-archive-s3-linux-box",
+    "credentials_file_ref": "file:///home/USER/.config/open-agent-stream/aws/credentials",
+    "config_file_ref": "file:///home/USER/.config/open-agent-stream/aws/config"
+  }
+}
+```
+
+Create those files with mode `0600` on a local POSIX filesystem.
+
+On WSL or any environment where `~/.aws` points into `/mnt/c/...` or another
+cross-mounted location, do not point file refs at that path. OAS validates
+file-backed secrets and may report `secret is missing` or `file-backed secret
+has insecure permissions` when the referenced files do not exist locally or do
+not satisfy the file-provider permission checks.
+
+OAS treats expired AWS sessions, locked providers, and missing secret-manager
+sessions as blocked delivery conditions. Those failures stay in retry/backoff
+instead of poisoning batches.
+
+## Provider capability matrix
+
+| Provider | Platforms | Live session required | Common failure mode | Recommended for production |
+| --- | --- | --- | --- | --- |
+| `env://` | macOS, Linux | No | missing variable | Yes |
+| `file://` | macOS, Linux | No | missing file or insecure permissions | Limited |
+| `op://` | macOS, Linux | Usually | expired 1Password CLI sign-in or session | Yes |
+| `keychain://` | macOS | Sometimes | locked or unauthorized keychain access | Experimental |
+| `pass://` | Linux | Often | `gpg-agent` or password-store issues | Experimental |
+
+Practical operator patterns:
+
+- macOS: AWS profiles, 1Password CLI, launchd environment injection, optional
+  experimental Keychain refs
+- Linux: AWS profiles, 1Password CLI, systemd environment or credential
+  injection, optional experimental `pass` refs
 
 ## Choose source roots carefully
 
@@ -232,6 +363,36 @@ A practical first rollout to S3 should look like this:
 Be aware that the first historical catch-up can be large. If you point OAS at
 years of existing local sessions on the first run, normalization and local
 ledger growth may take a while before delivery fully catches up.
+
+If you want one dedicated machine credential per host, start with a
+bucket-and-prefix-scoped policy like:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BucketHealth",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::YOUR-BUCKET"
+    },
+    {
+      "Sid": "WriteArchiveObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::YOUR-BUCKET/events/v2/shared-archive-s3/*"
+    }
+  ]
+}
+```
+
+Adjust the object resource to match your real `key_template` prefix.
 
 ## External sink example
 
@@ -335,10 +496,18 @@ That lets you confirm batch sealing and file staging before you swap back to
 
 - `queue_depth=0` after delivery catches up
 - `retrying_batch_count=0` during a healthy smoke test
+- `blocked_batch_count=0` during healthy operation
 - `quarantined_batch_count=0` unless you are intentionally testing poison-batch behavior
+- `blocked_kind`, `last_blocked_error`, and `last_auth_error` only when a sink
+  is blocked on auth or config
 - `acked_contiguous_offset` moving forward as the destination acknowledges sends
 - `terminal_contiguous_offset` moving forward even if a batch is terminally
   quarantined and retained locally for inspection
+
+`oas doctor` now reports both static auth checks and best-effort live checks.
+Static checks validate secret-ref syntax, provider binaries, path permissions,
+and auth-mode completeness. Live checks still verify that the sink can resolve
+credentials and reach the destination right now.
 
 ## Understanding acked versus terminal progress
 

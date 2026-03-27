@@ -20,13 +20,15 @@
 
 ## Testing
 
-Run:
+Run the same required checks GitHub requires before merge:
 
 ```bash
-go test ./...
+scripts/ci.sh
 ```
 
-Smoke-test the installed CLI flow:
+`scripts/ci.sh` runs the same commands as the required `build` and `cli-smoke` jobs. Its `go build -v ./...` and `go test -v ./...` step goes through `scripts/ci_go.sh`, which intentionally clears ambient `AWS_*` auth so local runs do not accidentally pass because of developer machine credentials.
+
+If you only need the installed CLI smoke flow:
 
 ```bash
 scripts/smoke_cli.sh

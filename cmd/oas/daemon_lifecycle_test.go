@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,9 @@ import (
 	"time"
 
 	"github.com/open-agent-stream/open-agent-stream/internal/config"
+	"github.com/open-agent-stream/open-agent-stream/internal/state"
+	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
+	"github.com/open-agent-stream/open-agent-stream/pkg/sinkapi"
 )
 
 func TestDaemonPathsForIncludesStatePathIdentity(t *testing.T) {
@@ -199,6 +203,91 @@ func TestDaemonLockHeldReportsTrueWhenLockIsHeld(t *testing.T) {
 	}
 	if !held {
 		t.Fatal("held = false, want true")
+	}
+}
+
+func TestDaemonDeliveryStatusForIncludesBlockedAndSecretProviderFields(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	store, err := state.Open(statePath)
+	if err != nil {
+		t.Fatalf("state.Open() error = %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	if err := store.EnqueueDeliveryItem("remote", 1, sinkapi.Batch{Events: []schema.CanonicalEvent{{EventID: "evt-1"}}}, state.DeliveryItemStatusPending, now); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListPendingDeliveryItems("remote", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := json.Marshal(map[string]any{"payload": "sealed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SealDeliveryBatch(state.DeliveryBatch{
+		BatchID:         "batch-1",
+		SinkID:          "remote",
+		PreparedJSON:    prepared,
+		PayloadBytes:    len(prepared),
+		LedgerMinOffset: 1,
+		LedgerMaxOffset: 1,
+		EventCount:      1,
+		Status:          state.DeliveryBatchStatusPending,
+		NextAttemptAt:   now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, []int64{items[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkDeliveryBatchBlocked("batch-1", "auth", "auth_expired", "env", "env:abcd1234: authentication has expired", now.Add(time.Second), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSecretResolutions("remote", []sinkapi.AuthMetric{{Provider: "env", ResolvedSecretCount: 2}}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses, err := daemonDeliveryStatusFor(config.Config{
+		StatePath: statePath,
+		Sinks: []sinkapi.Config{{
+			ID:   "remote",
+			Type: "http",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("daemonDeliveryStatusFor() error = %v", err)
+	}
+	if got, want := len(statuses), 1; got != want {
+		t.Fatalf("len(statuses) = %d, want %d", got, want)
+	}
+	status := statuses[0]
+	if got, want := status.BlockedBatchCount, 1; got != want {
+		t.Fatalf("BlockedBatchCount = %d, want %d", got, want)
+	}
+	if got, want := status.BlockedKind, "auth"; got != want {
+		t.Fatalf("BlockedKind = %q, want %q", got, want)
+	}
+	if got, want := status.AuthFailureAttempts, 1; got != want {
+		t.Fatalf("AuthFailureAttempts = %d, want %d", got, want)
+	}
+	if got, want := status.SuccessfulSecretResolutions, 2; got != want {
+		t.Fatalf("SuccessfulSecretResolutions = %d, want %d", got, want)
+	}
+	if status.LastAuthError == "" || status.LastBlockedError == "" {
+		t.Fatalf("expected blocked errors, got last_auth=%q last_blocked=%q", status.LastAuthError, status.LastBlockedError)
+	}
+	if got, want := len(status.SecretProviderStats), 1; got != want {
+		t.Fatalf("len(SecretProviderStats) = %d, want %d", got, want)
+	}
+	if got, want := status.SecretProviderStats[0].Provider, "env"; got != want {
+		t.Fatalf("provider = %q, want %q", got, want)
+	}
+	if got, want := status.SecretProviderStats[0].AuthFailures, 1; got != want {
+		t.Fatalf("auth_failures = %d, want %d", got, want)
+	}
+	if got, want := status.SecretProviderStats[0].SuccessfulResolutions, 2; got != want {
+		t.Fatalf("successful_resolutions = %d, want %d", got, want)
 	}
 }
 

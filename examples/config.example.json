@@ -35,7 +35,7 @@
         "url": "https://collector.example.invalid/ingest",
         "method": "POST",
         "format": "oas_batch_json",
-        "bearer_token_env": "OAS_REMOTE_TOKEN",
+        "bearer_token_ref": "env://OAS_REMOTE_TOKEN",
         "headers": {
           "X-OAS-Example": "remote-http"
         }

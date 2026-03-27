@@ -30,9 +30,13 @@
         "bucket": "oas-example-bucket",
         "region": "us-west-2",
         "prefix": "collector/",
-        "key_template": "{prefix}{sink_id}/{batch_id}.jsonl.gz",
+        "key_template": "{prefix}{sink_id}/{batch_id}-{payload_sha256}.jsonl.gz",
         "storage_class": "STANDARD",
-        "server_side_encryption": "AES256"
+        "server_side_encryption": "AES256",
+        "auth": {
+          "mode": "profile",
+          "profile": "oas-shared"
+        }
       },
       "delivery": {
         "max_batch_events": 1000,

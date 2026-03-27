@@ -147,3 +147,31 @@ func StringMap(cfg sinkapi.Config, key string) map[string]string {
 	}
 	return nil
 }
+
+func Map(cfg sinkapi.Config, key string) map[string]any {
+	if cfg.Settings != nil {
+		if value, ok := cfg.Settings[key]; ok {
+			switch typed := value.(type) {
+			case map[string]any:
+				out := make(map[string]any, len(typed))
+				for k, v := range typed {
+					out[k] = v
+				}
+				return out
+			}
+		}
+	}
+	return nil
+}
+
+func StringFromMap(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	if value, ok := values[key]; ok {
+		if typed, ok := value.(string); ok {
+			return typed
+		}
+	}
+	return ""
+}

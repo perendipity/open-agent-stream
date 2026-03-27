@@ -80,13 +80,41 @@ bundled fixtures as well as the config. If you run it outside an
 `open-agent-stream` checkout, pass `-root /path/to/open-agent-stream` or skip
 that step.
 
-## Run OAS as a service
+## Run OAS continuously
 
-- Linux `systemd`: use [`/packaging/systemd/oas.service`](../../packaging/systemd/oas.service)
-- macOS `launchd`: use [`/packaging/launchd/dev.open-agent-stream.oas.plist`](../../packaging/launchd/dev.open-agent-stream.oas.plist)
+The simplest per-user continuous path is:
+
+```bash
+oas daemon start -config /path/to/oas.json
+oas daemon status -config /path/to/oas.json
+```
+
+Use an OS service manager only when you need restart-on-boot, login/session
+integration, or supervisor-managed restart policy:
+
+- Linux `systemd`: use [`/packaging/systemd/oas.service`](../../packaging/systemd/oas.service), which runs `oas daemon run`
+- macOS `launchd`: use [`/packaging/launchd/dev.open-agent-stream.oas.plist`](../../packaging/launchd/dev.open-agent-stream.oas.plist), which runs `oas daemon run`
 - Other supervisors: run `oas daemon run -config /path/to/oas.json` in the foreground under your existing process manager
 
 The service templates are intentionally conservative. Update the config path, log path, working directory, and binary path before installation.
+
+If an `s3` sink uses `settings.auth.mode: "profile"`, prefer pinning
+`credentials_file_ref` and `config_file_ref` in the sink config rather than
+depending on ambient `AWS_PROFILE`. This is the most reliable path for Linux
+services and other minimal process-manager environments. Run the service as the
+same user that owns those AWS config files.
+
+For a first-time machine setup, a dedicated local AWS shared-config directory
+is often cleaner than reusing ambient `~/.aws`, for example:
+
+- `~/.config/open-agent-stream/aws/credentials`
+- `~/.config/open-agent-stream/aws/config`
+
+Keep those files on a local POSIX filesystem with restrictive permissions such
+as `0600`, then point `credentials_file_ref` and `config_file_ref` at them.
+Do not point file refs at Windows-mounted, network-mounted, or symlinked AWS
+files such as WSL `~/.aws -> /mnt/c/...`; OAS may reject those as missing or
+insecure during static auth checks.
 
 When you install OAS across multiple machines, keep the service file or plist
 pointed at a local config path such as `~/.config/open-agent-stream/oas.json`
