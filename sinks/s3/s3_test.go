@@ -109,7 +109,10 @@ func TestSealBatchFreezesDeterministicKey(t *testing.T) {
 }
 
 func TestSendPreparedUsesSealedObjectSettings(t *testing.T) {
-	t.Parallel()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_SESSION_TOKEN", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 
 	client := &fakePutObjectClient{}
 	sink := New(sinkapi.Config{
@@ -178,7 +181,10 @@ func TestSendPreparedUsesSealedObjectSettings(t *testing.T) {
 }
 
 func TestSendPreparedReturnsUnderlyingClientError(t *testing.T) {
-	t.Parallel()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_SESSION_TOKEN", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 
 	sink := New(sinkapi.Config{
 		ID:   "archive",
