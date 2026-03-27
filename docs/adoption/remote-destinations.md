@@ -35,6 +35,10 @@ Practical implications:
   trigger side effects
 - expect `s3` replay to stay disabled by default because it is append-only
 
+For serious use, keep the live config outside the `open-agent-stream` repo
+checkout and manage it through a private ops repo or template-render workflow.
+See [`config-management.md`](config-management.md).
+
 ## Choose the right sink
 
 Use `http` when:
@@ -56,6 +60,12 @@ Use `s3` when:
 - you want append-only archival or downstream fan-out from a bucket
 - you want sealed batch objects in `canonical_jsonl.gz`
 - you can provide a deterministic key template
+
+For shared destinations across multiple machines:
+
+- set `event_spec_version: "v2"`
+- give each machine its own local `machine_id`, `data_dir`, and source roots
+- keep the sink stanza identical across machines
 
 Use `external` when:
 
@@ -175,6 +185,54 @@ directly.
 That keeps retries on the same object key instead of creating accidental
 duplicates.
 
+For a shared bucket across several machines, prefer:
+
+- `event_spec_version: "v2"` on the sink
+- a bucket-level encryption policy
+- a key template that includes both `{batch_id}` and `{payload_sha256}`
+
+That combination preserves host identity in the payload and keeps retries
+deterministic at the object-key level.
+
+## Choose source roots carefully
+
+OAS walks JSON and JSONL files recursively. For real local use, do not point
+the built-in adapters at top-level agent home directories such as `~/.codex`
+or `~/.claude`, because those trees usually contain unrelated settings, cache,
+and todo JSON.
+
+Prefer session trees:
+
+- Codex: `~/.codex/sessions`, optionally `~/.codex/archived_sessions`
+- Claude: `~/.claude/projects`
+
+If you are validating a new remote destination, start even smaller:
+
+- one recent Codex day directory such as `~/.codex/sessions/2026/03/25`
+- one active Claude project directory under `~/.claude/projects/...`
+
+Then widen the source roots only after you confirm the remote payload shape and
+local storage budget.
+
+## Shared S3 rollout
+
+A practical first rollout to S3 should look like this:
+
+1. Create a dedicated private bucket or private prefix.
+2. Enable Block Public Access and default bucket encryption.
+3. Validate one machine first with a small recent source subtree.
+4. Confirm one uploaded object has:
+   - `ContentEncoding: gzip`
+   - `ContentType: application/x-ndjson`
+   - `ServerSideEncryption` set as expected
+5. Download one object and confirm the decompressed JSONL lines include
+   `machine_id` in `event_spec_version: "v2"` payloads.
+6. After the first machine is healthy, bring up the remaining machines.
+
+Be aware that the first historical catch-up can be large. If you point OAS at
+years of existing local sessions on the first run, normalization and local
+ledger growth may take a while before delivery fully catches up.
+
 ## External sink example
 
 ```json
@@ -262,6 +320,11 @@ argv temporarily with a simple copy:
   ]
 }
 ```
+
+For a real S3 smoke test, do the same thing conceptually: validate with a
+small recent source subtree first, let `oas run` or `oas daemon run` create a
+few batches, then inspect the uploaded objects before you widen the roots or
+turn on continuous mode.
 
 That lets you confirm batch sealing and file staging before you swap back to
 `rsync` or another real transport.

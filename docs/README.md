@@ -13,10 +13,11 @@ Read the repo in this order:
 9. [`governance/cli-standards.md`](governance/cli-standards.md)
 10. [`roadmap/cli-usability.md`](roadmap/cli-usability.md)
 11. [`adoption/install.md`](adoption/install.md)
-12. [`adoption/remote-destinations.md`](adoption/remote-destinations.md)
-13. [`adoption/multi-machine.md`](adoption/multi-machine.md)
-14. [`adoption/early-adopters.md`](adoption/early-adopters.md)
-15. [`roadmap/milestones.md`](roadmap/milestones.md)
+12. [`adoption/config-management.md`](adoption/config-management.md)
+13. [`adoption/remote-destinations.md`](adoption/remote-destinations.md)
+14. [`adoption/multi-machine.md`](adoption/multi-machine.md)
+15. [`adoption/early-adopters.md`](adoption/early-adopters.md)
+16. [`roadmap/milestones.md`](roadmap/milestones.md)
 
 ## Structure
 

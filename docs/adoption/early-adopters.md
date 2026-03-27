@@ -69,6 +69,14 @@ oas validate -config ./oas.json -root /path/to/open-agent-stream
 without `-root`, `oas validate` will fail outside an `open-agent-stream` repo
 checkout because it also validates the bundled fixtures.
 
+Prefer session roots, not top-level agent home directories:
+
+- Codex: `~/.codex/sessions`, optionally `~/.codex/archived_sessions`
+- Claude: `~/.claude/projects`
+
+If you are evaluating a new remote destination, start with a smaller recent
+subtree first and widen it after the first successful delivery.
+
 ## What OAS stores locally
 
 By default, OAS keeps its durable state under:
@@ -99,6 +107,8 @@ portable there.
 - keep off-machine sinks disabled until you review the configured privacy policy
 - use [`remote-destinations.md`](remote-destinations.md) for first-run remote
   sink setup and local validation before pointing OAS at a real external system
+- keep live configs outside the public repo checkout and manage multi-machine
+  configs through a private ops repo or template-render step
 - remember that replay-safe sinks are included by default, but append-only sinks
   like JSONL will duplicate output if you explicitly replay to them
 - set a `max_storage_bytes` budget if you want the daemon to enforce a hard cap

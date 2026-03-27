@@ -1,0 +1,81 @@
+{
+  "version": "0.1",
+  "machine_id": "machine-REPLACE-ME",
+  "data_dir": "/ABS/PATH/TO/open-agent-stream-state",
+  "batch_size": 64,
+  "poll_interval": "10s",
+  "error_backoff": "10s",
+  "max_consecutive_errors": 10,
+  "max_storage_bytes": 8589934592,
+  "prune_target_bytes": 6871947673,
+  "min_free_bytes": 1073741824,
+  "sources": [
+    {
+      "instance_id": "codex-sessions",
+      "type": "codex_local",
+      "root": "/ABS/PATH/TO/.codex/sessions"
+    },
+    {
+      "instance_id": "codex-archived",
+      "type": "codex_local",
+      "root": "/ABS/PATH/TO/.codex/archived_sessions"
+    },
+    {
+      "instance_id": "claude-projects",
+      "type": "claude_local",
+      "root": "/ABS/PATH/TO/.claude/projects"
+    }
+  ],
+  "sinks": [
+    {
+      "id": "shared-archive-s3",
+      "type": "s3",
+      "event_spec_version": "v2",
+      "settings": {
+        "bucket": "REPLACE-ME",
+        "region": "us-west-2",
+        "prefix": "events/v2/",
+        "key_template": "{prefix}{sink_id}/{batch_id}-{payload_sha256}.jsonl.gz",
+        "format": "canonical_jsonl.gz",
+        "storage_class": "STANDARD",
+        "server_side_encryption": "AES256"
+      },
+      "delivery": {
+        "max_batch_events": 500,
+        "max_batch_age": "30s",
+        "retry_initial_backoff": "5s",
+        "retry_max_backoff": "2m",
+        "poison_after_failures": 5
+      }
+    }
+  ],
+  "privacy": {
+    "default": {
+      "redact_keys": [
+        "api_key",
+        "token",
+        "secret",
+        "authorization",
+        "password"
+      ],
+      "regexes": [
+        {
+          "pattern": "Bearer\\s+[A-Za-z0-9._-]+",
+          "replacement": "Bearer [REDACTED]"
+        }
+      ]
+    },
+    "per_sink": {
+      "shared-archive-s3": {
+        "drop_raw": false,
+        "redact_keys": [
+          "api_key",
+          "token",
+          "secret",
+          "authorization",
+          "password"
+        ]
+      }
+    }
+  }
+}

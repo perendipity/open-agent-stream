@@ -7,6 +7,23 @@ OAS now supports two install paths:
 
 Use released binaries when you want reproducible installs across multiple machines.
 
+## Where live configs should live
+
+For real use, keep the live OAS config outside the `open-agent-stream` repo
+checkout.
+
+Recommended locations:
+
+- per-user: `~/.config/open-agent-stream/oas.json`
+- system-wide: `/etc/open-agent-stream/oas.json`
+
+For multi-machine teams, commit the real configs to a private ops repo or an
+existing infrastructure repo. Do not commit personal or environment-specific
+live configs back into the public OAS repo checkout.
+
+See [`config-management.md`](config-management.md) for the recommended sharing
+pattern.
+
 ## Install from a release archive
 
 1. Download the archive for your OS/architecture from the latest GitHub release.
@@ -52,6 +69,12 @@ from a local checkout so the generated starter config can point at
 `./fixtures/...`. If you are evaluating OAS against real local artifacts
 instead, edit the generated source roots to match those directories.
 
+For built-in sources, prefer session trees rather than top-level agent home
+directories:
+
+- Codex: `~/.codex/sessions`, optionally `~/.codex/archived_sessions`
+- Claude: `~/.claude/projects`
+
 Also note that `oas validate` is repo-checkout-aware because it validates the
 bundled fixtures as well as the config. If you run it outside an
 `open-agent-stream` checkout, pass `-root /path/to/open-agent-stream` or skip
@@ -64,6 +87,11 @@ that step.
 - Other supervisors: run `oas daemon run -config /path/to/oas.json` in the foreground under your existing process manager
 
 The service templates are intentionally conservative. Update the config path, log path, working directory, and binary path before installation.
+
+When you install OAS across multiple machines, keep the service file or plist
+pointed at a local config path such as `~/.config/open-agent-stream/oas.json`
+or `/etc/open-agent-stream/oas.json`. Share the config content through a
+private repo or render step, not through edits inside the public source tree.
 
 ## Upgrades and rollback
 

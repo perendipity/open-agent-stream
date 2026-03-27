@@ -1,0 +1,41 @@
+{
+  "shared_sink": {
+    "id": "shared-archive-s3",
+    "type": "s3",
+    "event_spec_version": "v2",
+    "settings": {
+      "bucket": "REPLACE-ME",
+      "region": "us-west-2",
+      "prefix": "events/v2/",
+      "key_template": "{prefix}{sink_id}/{batch_id}-{payload_sha256}.jsonl.gz",
+      "format": "canonical_jsonl.gz",
+      "storage_class": "STANDARD",
+      "server_side_encryption": "AES256"
+    },
+    "delivery": {
+      "max_batch_events": 500,
+      "max_batch_age": "30s",
+      "retry_initial_backoff": "5s",
+      "retry_max_backoff": "2m",
+      "poison_after_failures": 5
+    }
+  },
+  "shared_privacy_per_sink": {
+    "shared-archive-s3": {
+      "drop_raw": false,
+      "redact_keys": [
+        "api_key",
+        "token",
+        "secret",
+        "authorization",
+        "password"
+      ],
+      "regexes": [
+        {
+          "pattern": "Bearer\\s+[A-Za-z0-9._-]+",
+          "replacement": "Bearer [REDACTED]"
+        }
+      ]
+    }
+  }
+}
