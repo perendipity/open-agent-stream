@@ -279,6 +279,28 @@ That keeps `oas doctor`, `oas daemon run`, and service-manager launches on the
 same named profile even when the process environment is minimal or the working
 directory changes. Run OAS as the same user that owns those AWS files.
 
+For a new machine-local OAS profile, a dedicated directory is often less
+fragile than reusing ambient `~/.aws`:
+
+```json
+{
+  "auth": {
+    "mode": "profile",
+    "profile": "oas-shared-archive-s3-linux-box",
+    "credentials_file_ref": "file:///home/USER/.config/open-agent-stream/aws/credentials",
+    "config_file_ref": "file:///home/USER/.config/open-agent-stream/aws/config"
+  }
+}
+```
+
+Create those files with mode `0600` on a local POSIX filesystem.
+
+On WSL or any environment where `~/.aws` points into `/mnt/c/...` or another
+cross-mounted location, do not point file refs at that path. OAS validates
+file-backed secrets and may report `secret is missing` or `file-backed secret
+has insecure permissions` when the referenced files do not exist locally or do
+not satisfy the file-provider permission checks.
+
 OAS treats expired AWS sessions, locked providers, and missing secret-manager
 sessions as blocked delivery conditions. Those failures stay in retry/backoff
 instead of poisoning batches.
@@ -338,6 +360,36 @@ A practical first rollout to S3 should look like this:
 Be aware that the first historical catch-up can be large. If you point OAS at
 years of existing local sessions on the first run, normalization and local
 ledger growth may take a while before delivery fully catches up.
+
+If you want one dedicated machine credential per host, start with a
+bucket-and-prefix-scoped policy like:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BucketHealth",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::YOUR-BUCKET"
+    },
+    {
+      "Sid": "WriteArchiveObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::YOUR-BUCKET/events/v2/shared-archive-s3/*"
+    }
+  ]
+}
+```
+
+Adjust the object resource to match your real `key_template` prefix.
 
 ## External sink example
 

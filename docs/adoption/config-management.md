@@ -119,6 +119,11 @@ Use:
     the first two options
 - machine environment or a secret manager for `command` and `external` sinks
 
+When you use `file://` secret references, point them at machine-local files on
+a local POSIX filesystem with restrictive permissions such as `0600`. Avoid
+repo-relative secret files, shared drives, and cross-mounted paths such as WSL
+`/mnt/c/...` or a symlinked `~/.aws` backed by that mount.
+
 What is usually safe to commit in a private ops repo:
 
 - bucket names

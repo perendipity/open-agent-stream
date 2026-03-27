@@ -76,8 +76,18 @@ subtrees first and widen them later.
 
 ## Service management
 
-- Linux `systemd`: start from [`/packaging/systemd/oas.service`](../../packaging/systemd/oas.service)
-- macOS `launchd`: start from [`/packaging/launchd/dev.open-agent-stream.oas.plist`](../../packaging/launchd/dev.open-agent-stream.oas.plist)
+For the simplest machine-local continuous mode, use:
+
+```bash
+oas daemon start -config /path/to/oas.json
+oas daemon status -config /path/to/oas.json
+```
+
+Use an external service manager only when you need restart-on-boot or existing
+supervisor integration:
+
+- Linux `systemd`: start from [`/packaging/systemd/oas.service`](../../packaging/systemd/oas.service), which runs `oas daemon run`
+- macOS `launchd`: start from [`/packaging/launchd/dev.open-agent-stream.oas.plist`](../../packaging/launchd/dev.open-agent-stream.oas.plist), which runs `oas daemon run`
 - other environments: run `oas daemon run` under your existing supervisor
 
 For `s3` profile auth, run OAS as the same user that owns the AWS shared config
