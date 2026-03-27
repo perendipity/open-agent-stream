@@ -130,3 +130,32 @@ func TestWriteConfigInspectReportIncludesInspectabilitySections(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteConfigInspectReportIncludesWarnings(t *testing.T) {
+	view := configInspectView{
+		ConfigPath: "/tmp/oas.json",
+		ConfigDir:  "/tmp",
+		Config: config.Config{
+			Version:   "0.1",
+			MachineID: "machine-123",
+		},
+		Warnings: []string{
+			"shared sink(s) shared-archive-s3 are configured but neither state_path nor ledger_path exists yet",
+		},
+	}
+
+	var out bytes.Buffer
+	if err := writeConfigInspectReport(&out, view); err != nil {
+		t.Fatalf("writeConfigInspectReport() error = %v", err)
+	}
+
+	text := out.String()
+	for _, want := range []string{
+		"Warnings:",
+		"shared sink(s) shared-archive-s3 are configured",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("report missing %q:\n%s", want, text)
+		}
+	}
+}

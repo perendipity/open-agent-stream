@@ -119,6 +119,10 @@ Also run those checks serially against the same config path. Parallel status,
 doctor, and manual inspection commands against the same live SQLite files can
 produce transient `SQLITE_BUSY` responses during local validation.
 
+`oas validate` also rejects overlapping source roots and warns when a shared
+destination is configured against missing local state, because both patterns can
+replay historical files into the shared sink unexpectedly.
+
 ## Backup and restore
 
 - back up both `state.db` and `ledger.db` together

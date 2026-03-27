@@ -135,6 +135,7 @@ func Validate(cfg Config) error {
 			errs = append(errs, fmt.Errorf("sinks[%d]: %w", i, err))
 		}
 	}
+	errs = append(errs, sourceRootOverlapErrors(cfg)...)
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}

@@ -37,7 +37,7 @@ func buildValidationReport(configPath, rootPath string) validationReport {
 			if err != nil {
 				report.ConfigIssues = append(report.ConfigIssues, flattenValidationIssues(err)...)
 			} else {
-				report.ConfigWarnings = append(report.ConfigWarnings, config.MachineIDWarnings(cfg.MachineID)...)
+				report.ConfigWarnings = append(report.ConfigWarnings, config.Warnings(cfg)...)
 			}
 		}
 	}

@@ -322,6 +322,10 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 		health.CheckWritablePath(ctx, "state_path", r.cfg.StatePath),
 		health.CheckWritablePath(ctx, "ledger_path", r.cfg.LedgerPath),
 	}
+	bounds, err := r.ledger.Bounds()
+	if err != nil {
+		return nil, err
+	}
 	deliveryStatus, err := r.delivery.DeliveryStatus(time.Now().UTC())
 	if err != nil {
 		return nil, err
@@ -329,6 +333,7 @@ func (r *Runtime) Doctor(ctx context.Context) ([]health.Check, error) {
 	for _, source := range r.cfg.Sources {
 		checks = append(checks, health.CheckReadablePath(ctx, "source:"+source.InstanceID, source.Root))
 	}
+	checks = append(checks, sharedBootstrapChecks(r.cfg, bounds, deliveryStatus)...)
 	worktreeRoot := ""
 	if cwd, err := os.Getwd(); err == nil {
 		worktreeRoot = secretref.FindWorktreeRoot(cwd)

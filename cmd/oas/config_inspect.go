@@ -15,6 +15,7 @@ type configInspectView struct {
 	ConfigDir  string              `json:"config_dir"`
 	Config     config.Config       `json:"config"`
 	Resolved   configResolvedPaths `json:"resolved"`
+	Warnings   []string            `json:"warnings,omitempty"`
 }
 
 type configResolvedPaths struct {
@@ -42,6 +43,7 @@ func buildConfigInspectView(configPath string, cfg config.Config) configInspectV
 		ConfigPath: absConfigPath,
 		ConfigDir:  filepath.Dir(absConfigPath),
 		Config:     cfg,
+		Warnings:   config.Warnings(cfg),
 		Resolved: configResolvedPaths{
 			DataDir:        absolutePathOrValue(cfg.DataDir),
 			StatePath:      absolutePathOrValue(cfg.StatePath),
@@ -84,6 +86,7 @@ func writeConfigInspectReport(writer io.Writer, view configInspectView) error {
 		[2]string{"Version", view.Config.Version},
 		[2]string{"Machine ID", view.Config.MachineID},
 	)
+	appendBulletSection(&b, "Warnings", view.Warnings)
 	appendKeyValueSection(&b, "Runtime",
 		[2]string{"Batch size", strconv.Itoa(view.Config.BatchSize)},
 		[2]string{"Poll interval", view.Config.PollInterval},

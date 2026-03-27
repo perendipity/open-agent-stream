@@ -59,6 +59,31 @@ func TestFormatValidationFailureIncludesRepoRootHintForMissingFixtures(t *testin
 	}
 }
 
+func TestBuildValidationReportIncludesSharedBootstrapWarnings(t *testing.T) {
+	base := t.TempDir()
+	configPath := filepath.Join(base, "oas.json")
+	if err := os.WriteFile(configPath, []byte(`{
+  "version":"0.1",
+  "machine_id":"machine-123",
+  "state_path":"`+filepath.Join(base, "state.db")+`",
+  "ledger_path":"`+filepath.Join(base, "ledger.db")+`",
+  "sources":[{"instance_id":"codex-local","type":"codex_local","root":"`+base+`"}],
+  "sinks":[{"id":"shared-archive-s3","type":"s3","settings":{"bucket":"demo","region":"us-west-2"}}]
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	report := buildValidationReport(configPath, repoRootForTest(t))
+	if !report.OK() {
+		t.Fatalf("report.OK() = false, want true; issues=%#v warnings=%#v", report.ConfigIssues, report.ConfigWarnings)
+	}
+
+	text := strings.Join(report.ConfigWarnings, "\n")
+	if !strings.Contains(text, "neither state_path nor ledger_path exists yet") {
+		t.Fatalf("ConfigWarnings = %#v, want shared bootstrap warning", report.ConfigWarnings)
+	}
+}
+
 func repoRootForTest(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.Abs(filepath.Join("..", ".."))

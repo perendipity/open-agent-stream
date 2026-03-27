@@ -37,6 +37,15 @@ func ReplayClassForType(sinkType string) ReplayClass {
 	}
 }
 
+func IsSharedDestinationType(sinkType string) bool {
+	switch sinkType {
+	case "s3", "http", "webhook", "command", "external":
+		return true
+	default:
+		return false
+	}
+}
+
 func DefaultReplayAllowed(class ReplayClass) bool {
 	return class == ReplayClassIdempotent
 }
