@@ -378,7 +378,7 @@ func doctorCommand(ctx context.Context, args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas doctor -config <path>
 
-Run operational checks and print a readable table by default.
+Run operational checks, including static auth/config validation and live sink checks.
 
 `)
 		printFlagSection(os.Stderr, fs, "Common flags",
@@ -508,7 +508,7 @@ Subcommands:
   run       Run the daemon in the foreground
   start     Start a detached daemon
   stop      Stop a detached daemon
-  status    Show daemon/runtime status, resolved paths, and storage activity
+  status    Show daemon/runtime status, delivery blockage signals, resolved paths, and storage activity
   restart   Restart a detached daemon
 
 Examples:

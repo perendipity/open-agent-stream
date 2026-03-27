@@ -316,7 +316,7 @@ func daemonStatusCommand(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `usage: oas daemon status -config <path> [flags]
 
-Show daemon/runtime status, resolved paths, and storage activity.
+Show daemon/runtime status, delivery blockage signals, resolved paths, and storage activity.
 
 `)
 		printFlagSection(os.Stderr, fs, "Common flags",
