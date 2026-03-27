@@ -36,6 +36,7 @@ type Sink struct {
 	region       string
 	auth         sinkauth.S3Settings
 	resolver     *secretref.Resolver
+	initialized  bool
 }
 
 type objectClient interface {
@@ -54,6 +55,9 @@ func (s *Sink) ID() string   { return s.cfg.ID }
 func (s *Sink) Type() string { return s.cfg.Type }
 
 func (s *Sink) Init(ctx context.Context) error {
+	if s.initialized {
+		return nil
+	}
 	s.bucket = sinkutil.String(s.cfg, "bucket")
 	if s.bucket == "" {
 		return errors.New("s3 sink requires bucket")
@@ -75,10 +79,14 @@ func (s *Sink) Init(ctx context.Context) error {
 		return err
 	}
 	s.auth = auth
+	s.initialized = true
 	return nil
 }
 
-func (s *Sink) SealBatch(_ context.Context, batch sinkapi.Batch, meta delivery.PreparedDispatch) (delivery.PreparedDispatch, error) {
+func (s *Sink) SealBatch(ctx context.Context, batch sinkapi.Batch, meta delivery.PreparedDispatch) (delivery.PreparedDispatch, error) {
+	if err := s.ensureInit(ctx); err != nil {
+		return delivery.PreparedDispatch{}, err
+	}
 	payload, contentType, headers, err := sinkpayload.EncodeBatch(batch, s.format)
 	if err != nil {
 		return delivery.PreparedDispatch{}, err
@@ -154,6 +162,9 @@ func (s *Sink) SendBatch(ctx context.Context, batch sinkapi.Batch) (sinkapi.Resu
 
 func (s *Sink) Flush(context.Context) error { return nil }
 func (s *Sink) Health(ctx context.Context) error {
+	if err := s.ensureInit(ctx); err != nil {
+		return err
+	}
 	bucket := sinkutil.String(s.cfg, "bucket")
 	if bucket == "" {
 		return errors.New("s3 sink requires bucket")
@@ -171,6 +182,9 @@ func (s *Sink) Health(ctx context.Context) error {
 func (s *Sink) Close(context.Context) error { return nil }
 
 func (s *Sink) clientFor(ctx context.Context) (objectClient, []sinkapi.AuthMetric, string, error) {
+	if err := s.ensureInit(ctx); err != nil {
+		return nil, nil, "", err
+	}
 	awsCfg, authMetrics, provider, err := s.awsConfig(ctx)
 	if err != nil {
 		return nil, nil, provider, err
@@ -179,6 +193,13 @@ func (s *Sink) clientFor(ctx context.Context) (objectClient, []sinkapi.AuthMetri
 		return s.client, authMetrics, provider, nil
 	}
 	return s3.NewFromConfig(awsCfg), authMetrics, provider, nil
+}
+
+func (s *Sink) ensureInit(ctx context.Context) error {
+	if s.initialized {
+		return nil
+	}
+	return s.Init(ctx)
 }
 
 func (s *Sink) awsConfig(ctx context.Context) (aws.Config, []sinkapi.AuthMetric, string, error) {

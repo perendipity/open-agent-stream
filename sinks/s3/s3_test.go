@@ -315,6 +315,45 @@ func TestHealthProfileModeUsesCredentialFileRef(t *testing.T) {
 	}
 }
 
+func TestHealthProfileModeUsesExplicitProfileFilesWithoutInit(t *testing.T) {
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	base := t.TempDir()
+	t.Setenv("HOME", filepath.Join(base, "empty-home"))
+
+	credentialsPath := filepath.Join(base, "credentials")
+	credentials := "[local]\naws_access_key_id = test\naws_secret_access_key = test\n"
+	if err := os.WriteFile(credentialsPath, []byte(credentials), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configPath := filepath.Join(base, "config")
+	config := "[profile local]\nregion = us-west-2\noutput = json\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakePutObjectClient{}
+	sink := New(sinkapi.Config{
+		ID:   "archive",
+		Type: "s3",
+		Settings: map[string]any{
+			"bucket": "example-bucket",
+			"region": "us-west-2",
+			"auth": map[string]any{
+				"mode":                 "profile",
+				"profile":              "local",
+				"credentials_file_ref": "file://" + credentialsPath,
+				"config_file_ref":      "file://" + configPath,
+			},
+		},
+	})
+	sink.client = client
+	if err := sink.Health(context.Background()); err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+}
+
 func TestSendPreparedClassifiesCredentialFailuresAsBlocked(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
