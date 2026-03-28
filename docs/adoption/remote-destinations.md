@@ -1,6 +1,8 @@
 # Remote Destinations
 
 This guide is the practical setup path for sending OAS batches off-machine.
+Remote delivery is optional; local retention, export, and inspection remain
+complete workflows even if you never configure an off-machine sink.
 
 The stock runtime includes these built-in remote-capable sinks:
 

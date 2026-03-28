@@ -1,6 +1,8 @@
 # Session Model
 
-Session identity is source-aware but internally stable.
+Session identity is source-aware but internally stable so retained history stays
+inspectable and exportable even as source artifacts vary across vendors or
+machines.
 
 The collector maps:
 
@@ -17,4 +19,3 @@ Normalizers must apply deterministic rules for:
 - orphaned
 
 The canonical event stream is ordered by local ledger offset plus per-session sequence.
-
