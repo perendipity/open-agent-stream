@@ -1,20 +1,68 @@
 # open-agent-stream
 
-`open-agent-stream` is a local-first event pipeline and open standard for agentic work.
+`open-agent-stream` (`oas`) helps developers gather, retain, replay, inspect, and export their own coding-agent session data across operating systems and one or more machines without depending on vendor-native schemas or vendor-controlled infrastructure.
 
-It is designed to capture source-native coding-agent artifacts, append them to an immutable local ledger, normalize them into a portable canonical event stream, and route those events to one or more sinks without binding the core to any single product's semantics.
+It captures source-native artifacts, appends them to an immutable local ledger, normalizes them into a portable canonical event stream, and optionally routes those events to one or more sinks. The durable source of truth stays user-controlled and local-first rather than vendor-hosted.
 
 ## Thesis
 
 The project optimizes for:
 
+- user-owned session history
 - source volatility
 - replayability
+- inspectability
+- exportability
 - privacy
 - portability
 - community extensibility
 
-It explicitly does **not** optimize for tightly coupled product semantics.
+It explicitly does **not** optimize for tightly coupled product semantics,
+vendor-native canonical schemas, or vendor-hosted control planes.
+
+## What OAS Helps You Do
+
+- gather supported coding-agent session artifacts from local machines
+- retain raw and canonical history under storage the developer controls
+- replay retained history when sinks, schemas, or downstream tooling change
+- inspect sessions locally with stable CLI workflows
+- export deterministic snapshots for review, analytics, and downstream tooling
+- converge data from one machine or many without making a vendor backend the
+  center of the architecture
+
+## Who OAS Is For
+
+- developers using coding agents across one machine or many who want to keep
+  session history under their own control
+- tool builders who need portable local session traces for review, analytics,
+  compliance, or automation
+- OSS contributors who want to expand source coverage, sink coverage, and
+  cross-platform operability
+
+## Contribute / Expand Coverage
+
+OAS is still early enough that outside contributors can materially expand what
+it supports.
+
+High-value contribution lanes:
+
+- add or harden source adapters for more local artifact families
+- improve cross-platform discovery rules, root/path conventions, and Windows or
+  WSL ergonomics
+- contribute fixtures and conformance coverage for new artifact families and
+  replay or export edge cases
+- add external sink examples or upstream generally useful sinks
+- improve install, packaging, and distribution ergonomics across macOS, Linux,
+  and Windows
+- help shape schema, compatibility, and extension boundaries as more agents and
+  destinations are supported
+
+Today the stock `oas` CLI supports built-in source adapters and out-of-process
+`external` sinks, but it does **not** yet support drop-in third-party source
+adapters. If you want a new source in the stock CLI, the practical path today
+is to upstream it here or maintain a custom CLI overlay. See
+[`docs/integrations/README.md`](docs/integrations/README.md) and
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Current Status
 
@@ -27,11 +75,13 @@ This repository is intentionally spec-first. The initial implementation includes
   - a SQLite-backed raw ledger and state store
   - a canonical normalizer
   - neutral sinks for `jsonl`, `sqlite`, `stdout`, `http`, `command`, and `s3`, plus a `webhook` compatibility alias to `http`
-  - CLI commands for `run`, `daemon`, `replay`, `export`, `analytics`, `doctor`, and `validate`
+  - CLI commands for `run`, `daemon`, `replay`, `export`, `summary`, `inspect`,
+    `analytics`, `doctor`, and `validate`
 
 ## Non-Goals
 
 - product-specific sink semantics in the core repo
+- a required vendor-hosted backend or managed OAS control plane
 - LLM-powered summarization in the ingestion path
 - vendor-defined canonical schemas
 - a distributed ingestion system in v0
@@ -73,7 +123,8 @@ repo so the starter config can point at `./fixtures/...`.
 ## Quickstart
 
 The demo flow below uses repository fixtures, so run these commands from the
-repo root.
+repo root. It walks through the core lifecycle: gather, retain, export, and
+inspect.
 
 ### 1. Generate a starter config
 
@@ -235,6 +286,9 @@ not supported for daemon lifecycle control because lock semantics are not
 portable there.
 
 ### 8. Configure remote destinations
+
+Remote delivery is optional. You can stop at local retention plus `export`,
+`summary`, and `inspect` if you only need user-controlled collection and review.
 
 Built-in remote sinks use two config blocks:
 

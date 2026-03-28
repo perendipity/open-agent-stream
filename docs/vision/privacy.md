@@ -8,5 +8,5 @@ Policy can act at three stages:
 2. before canonical event delivery
 3. before raw delivery to external sinks
 
-The default stance is local retention with explicit per-sink release.
-
+The default stance is user-controlled local retention with explicit per-sink
+release from each machine.

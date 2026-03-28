@@ -1,5 +1,9 @@
 # Pipeline
 
+The reference architecture is designed to gather source-native session artifacts
+once, retain them locally, and support repeatable replay, inspection, and
+export without asking a vendor service to reconstruct history.
+
 The reference architecture is a six-layer pipeline:
 
 1. Source adapters
@@ -10,6 +14,8 @@ The reference architecture is a six-layer pipeline:
 6. Sealed dispatch batches and sink delivery
 
 Optional derivers and indexers sit downstream and must never block raw capture.
+Deterministic export and local inspection are built from retained data, not
+from sink side effects.
 
 ## Runtime Components
 

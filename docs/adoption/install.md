@@ -5,7 +5,8 @@ OAS now supports two install paths:
 - released binaries with SHA256 checksums for common macOS, Linux, and Windows targets
 - `go install` from source for contributors and local checkout workflows
 
-Use released binaries when you want reproducible installs across multiple machines.
+Use released binaries when you want reproducible installs across one or more
+machines and operating systems.
 
 ## Where live configs should live
 
@@ -120,6 +121,8 @@ When you install OAS across multiple machines, keep the service file or plist
 pointed at a local config path such as `~/.config/open-agent-stream/oas.json`
 or `/etc/open-agent-stream/oas.json`. Share the config content through a
 private repo or render step, not through edits inside the public source tree.
+Each machine keeps its own local ledger and state; shared sinks are optional
+convergence points, not shared machine state.
 
 ## Upgrades and rollback
 

@@ -3,9 +3,25 @@
 This guide is the fastest way to understand how to extend OAS without depending
 on `/internal`.
 
+## Plain-language boundary today
+
+The current extension model is intentionally uneven:
+
+- the stock `oas` CLI supports built-in source adapters
+- the stock `oas` CLI supports out-of-process `external` sinks
+- the stock `oas` CLI does **not** yet support drop-in third-party source
+  adapters
+- new source adapters usually get upstreamed here or live in a custom CLI
+  overlay
+
+If you want to help improve that boundary, contributor work is welcome. The
+current architecture is ready for more adapters, more fixtures, and clearer
+cross-platform source discovery, even though dynamic source-plugin loading is
+not part of the stock runtime yet.
+
 ## Choose your path first
 
-Today there are three realistic ways to extend OAS:
+Today there are four realistic ways to extend OAS:
 
 1. **Use the built-in types as-is** if the existing adapters and sinks already
    cover your workflow.
@@ -18,6 +34,20 @@ Today there are three realistic ways to extend OAS:
 
 The important distinction is that the **contracts are ready before the runtime
 plugin boundary is finalized**.
+
+## Where contributors can help most
+
+High-value contribution lanes today include:
+
+- adding or hardening source adapters for more local coding-agent artifact
+  families
+- improving cross-platform discovery heuristics, path conventions, and Windows
+  or WSL ergonomics
+- expanding fixtures and conformance coverage for replay, export, and
+  normalization edge cases
+- shipping reusable `external` sinks or upstreaming generally useful built-in
+  sinks
+- clarifying schema and compatibility boundaries as more sources arrive
 
 ## What is stable today
 
@@ -192,12 +222,14 @@ reference bar.
 ## Current integration reality
 
 The stock `oas` CLI now supports out-of-process external sinks, but it still
-does **not** dynamically discover external source adapters. In practice:
+does **not** dynamically discover third-party source adapters. In practice:
 
 - upstream an adapter here if you want it available in the stock `oas` CLI
 - use `type: "external"` for proprietary or unbundled destinations
 - maintain a custom CLI overlay only when you need a custom source adapter or a
   runtime change outside the published sink/runtime contracts
+- contribute on this boundary if you want to help make source extensibility more
+  portable in future revisions
 
 See [RFC 0002](../../rfcs/0002-external-plugin-runtime.md) for the current
 reasoning behind that boundary.

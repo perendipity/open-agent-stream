@@ -18,6 +18,27 @@
 3. Keep runtime-only machinery in `/internal`.
 4. Prefer adding fixtures before broadening heuristics in adapters or normalizers.
 
+## Wanted Contributions
+
+High-value contribution areas right now:
+
+- new or improved source adapters for additional local coding-agent artifact
+  families
+- cross-platform source discovery, root/path conventions, and Windows or WSL
+  ergonomics
+- fixture and conformance coverage for new artifact families and replay/export
+  edge cases
+- reusable `external` sink examples or generally useful built-in sinks
+- install, packaging, and distribution improvements across supported operating
+  systems
+- clearer schema, compatibility, and extension-boundary documentation as the
+  source matrix grows
+
+One boundary to understand before you start: the stock `oas` CLI supports
+drop-in `external` sinks today, but it does **not** yet support drop-in
+third-party source adapters. New source adapters are usually upstreamed here or
+carried in a custom CLI overlay.
+
 ## Testing
 
 Run the same required checks GitHub requires before merge:

@@ -3,17 +3,23 @@
 This guide is the practical "what should I expect?" document for the first
 people trying OAS.
 
+The intended outcome is straightforward: gather session data from local coding
+agents, retain it under your control, then replay, inspect, or export it
+without handing the core workflow back to a vendor platform.
+
 ## What is ready today
 
 OAS is in good shape for:
 
-- local-first collection from the built-in Codex and Claude fixture-backed
-  source families
+- developer-controlled collection from the built-in Codex and Claude
+  fixture-backed source families
+- local retention of raw and canonical session history
 - deterministic export to JSONL for review and downstream tooling
 - reviewer-oriented session triage with `oas summary` and `oas inspect`
 - continuous collection with daemon mode and storage-budget visibility
 - remote delivery through the built-in `http`, `command`, and `s3` sinks when
   you want near-real-time forwarding or scheduled batch release
+- multi-machine deployment where each host keeps its own local state
 
 ## What is still intentionally early
 
@@ -45,7 +51,8 @@ oas summary -input ./exports/events.jsonl
 ```
 
 That path exercises config generation, config inspectability, validation,
-ingestion, export, and reviewer UX without requiring a daemon first.
+ingestion, export, and reviewer UX without requiring a daemon first or any
+vendor-hosted service.
 
 ### B. Real local evaluation flow
 

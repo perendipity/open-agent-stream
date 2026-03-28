@@ -1,6 +1,12 @@
 # Multi-Machine Deployment Guide
 
-This guide covers the minimal production shape for running OAS on multiple machines and delivering into one shared destination.
+This guide covers the minimal production shape for running OAS on multiple
+machines and optionally converging their retained session streams into one
+shared destination.
+
+OAS does not require a shared vendor service or shared database to do this.
+Each machine keeps its own local source roots, ledger, and state, and shared
+destinations receive portable copies of that history.
 
 ## Deployment model
 
@@ -8,8 +14,11 @@ This guide covers the minimal production shape for running OAS on multiple machi
 - give each machine its own config, `state.db`, and `ledger.db`
 - assign a unique opaque `machine_id` per machine
 - use `event_spec_version: "v2"` on shared-destination sinks so portable exports and remote payloads keep host identity
+- treat shared destinations as downstream convergence points, not as the
+  authoritative retention layer
 
-Each OAS instance owns only its local durable state. Shared destinations are where streams converge.
+Each OAS instance owns only its local durable state. Shared destinations are
+optional places where streams converge.
 
 ## Current config model
 

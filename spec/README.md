@@ -1,6 +1,7 @@
 # Spec Index
 
-`/spec` is the normative source of truth.
+`/spec` is the normative source of truth for portable, developer-owned
+coding-agent session data contracts.
 
 - `raw-envelope/v1`: immutable capture record
 - `canonical-event/v1`: portable event stream
