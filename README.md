@@ -30,6 +30,40 @@ vendor-native canonical schemas, or vendor-hosted control planes.
 - converge data from one machine or many without making a vendor backend the
   center of the architecture
 
+## Who OAS Is For
+
+- developers using coding agents across one machine or many who want to keep
+  session history under their own control
+- tool builders who need portable local session traces for review, analytics,
+  compliance, or automation
+- OSS contributors who want to expand source coverage, sink coverage, and
+  cross-platform operability
+
+## Contribute / Expand Coverage
+
+OAS is still early enough that outside contributors can materially expand what
+it supports.
+
+High-value contribution lanes:
+
+- add or harden source adapters for more local artifact families
+- improve cross-platform discovery rules, root/path conventions, and Windows or
+  WSL ergonomics
+- contribute fixtures and conformance coverage for new artifact families and
+  replay or export edge cases
+- add external sink examples or upstream generally useful sinks
+- improve install, packaging, and distribution ergonomics across macOS, Linux,
+  and Windows
+- help shape schema, compatibility, and extension boundaries as more agents and
+  destinations are supported
+
+Today the stock `oas` CLI supports built-in source adapters and out-of-process
+`external` sinks, but it does **not** yet support drop-in third-party source
+adapters. If you want a new source in the stock CLI, the practical path today
+is to upstream it here or maintain a custom CLI overlay. See
+[`docs/integrations/README.md`](docs/integrations/README.md) and
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## Current Status
 
 This repository is intentionally spec-first. The initial implementation includes:
