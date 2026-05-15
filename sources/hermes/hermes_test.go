@@ -386,6 +386,182 @@ func TestReadEmitsRawHermesMessageEnvelopes(t *testing.T) {
 	}
 }
 
+func TestReadCheckpointIsArtifactSafeAndIncremental(t *testing.T) {
+	root := t.TempDir()
+	dbPath := createStateDB(t, filepath.Join(root, "state.db"))
+	db := openTestSQLiteDB(t, dbPath)
+	insertHermesSession(t, db, "sess-1", "discord", "gpt-test", "Test Session", "secret system prompt", 100.5)
+	insertHermesMessage(t, db, 1, "sess-1", "user", "one", 101, nil)
+	insertHermesMessage(t, db, 2, "sess-1", "assistant", "two", 102, nil)
+
+	artifact := discoveredArtifactForPath(t, root, dbPath)
+	cfg := sourceapi.Config{InstanceID: "instance-1"}
+	adapter := New()
+
+	first, checkpoint, err := adapter.Read(context.Background(), cfg, artifact, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("first Read() error = %v", err)
+	}
+	if len(first) != 2 {
+		t.Fatalf("first Read() returned %d envelopes, want 2", len(first))
+	}
+	assertCheckpoint(t, checkpoint, "2", artifact.Fingerprint, dbPath)
+
+	second, secondCheckpoint, err := adapter.Read(context.Background(), cfg, artifact, checkpoint)
+	if err != nil {
+		t.Fatalf("second Read() error = %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("second Read() returned %d envelopes, want 0", len(second))
+	}
+	assertCheckpoint(t, secondCheckpoint, "2", artifact.Fingerprint, dbPath)
+
+	insertHermesMessage(t, db, 3, "sess-1", "user", "three", 103, nil)
+	afterAppend, appendCheckpoint, err := adapter.Read(context.Background(), cfg, artifact, secondCheckpoint)
+	if err != nil {
+		t.Fatalf("append Read() error = %v", err)
+	}
+	if len(afterAppend) != 1 || afterAppend[0].Cursor.Value != "3" {
+		t.Fatalf("append Read() got %d envelopes cursor %q, want one cursor 3", len(afterAppend), firstCursorValue(afterAppend))
+	}
+	assertCheckpoint(t, appendCheckpoint, "3", artifact.Fingerprint, dbPath)
+
+	otherRoot := t.TempDir()
+	otherDBPath := createStateDB(t, filepath.Join(otherRoot, "state.db"))
+	otherDB := openTestSQLiteDB(t, otherDBPath)
+	insertHermesSession(t, otherDB, "sess-other", "discord", "gpt-test", "Other", "prompt", 200)
+	insertHermesMessage(t, otherDB, 1, "sess-other", "user", "other one", 201, nil)
+	otherArtifact := discoveredArtifactForPath(t, otherRoot, otherDBPath)
+	crossArtifact, crossCheckpoint, err := adapter.Read(context.Background(), cfg, otherArtifact, appendCheckpoint)
+	if err != nil {
+		t.Fatalf("cross-artifact Read() error = %v", err)
+	}
+	if len(crossArtifact) != 1 || crossArtifact[0].Cursor.Value != "1" {
+		t.Fatalf("cross-artifact Read() got %d envelopes cursor %q, want one cursor 1", len(crossArtifact), firstCursorValue(crossArtifact))
+	}
+	assertCheckpoint(t, crossCheckpoint, "1", otherArtifact.Fingerprint, otherDBPath)
+}
+
+func TestReadInvalidCheckpointCursorReturnsError(t *testing.T) {
+	root := t.TempDir()
+	dbPath := createStateDB(t, filepath.Join(root, "state.db"))
+	artifact := discoveredArtifactForPath(t, root, dbPath)
+
+	_, _, err := New().Read(context.Background(), sourceapi.Config{}, artifact, sourceapi.Checkpoint{Cursor: "not-an-int"})
+	if err == nil {
+		t.Fatal("Read() error = nil, want invalid cursor error")
+	}
+	if !strings.Contains(err.Error(), "checkpoint cursor") || !strings.Contains(err.Error(), "not-an-int") {
+		t.Fatalf("Read() error = %q, want clear checkpoint cursor parse error", err.Error())
+	}
+}
+
+func TestReadNullHeavyMessageWithoutJoinedSessionUsesUnknownKind(t *testing.T) {
+	dbPath := createStateDB(t, filepath.Join(t.TempDir(), "state.db"))
+	db := openTestSQLiteDB(t, dbPath)
+	if _, err := db.Exec(`INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, 'missing-session', '', NULL, NULL)`); err != nil {
+		t.Fatal(err)
+	}
+
+	envelopes, _, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(envelopes) != 1 {
+		t.Fatalf("Read() returned %d envelopes, want 1", len(envelopes))
+	}
+	if envelopes[0].RawKind != "message.unknown" {
+		t.Fatalf("RawKind = %q, want message.unknown", envelopes[0].RawKind)
+	}
+	if envelopes[0].SourceTimestamp != nil {
+		t.Fatalf("SourceTimestamp = %#v, want nil", envelopes[0].SourceTimestamp)
+	}
+	payload := decodeRawPayload(t, envelopes[0])
+	if payload["session"] != nil {
+		t.Fatalf("payload session = %#v, want omitted for missing joined session", payload["session"])
+	}
+	message := payload["message"].(map[string]any)
+	if message["id"] != float64(1) || message["session_id"] != "missing-session" || message["role"] != "" {
+		t.Fatalf("payload message = %#v, want id/session_id/empty role", message)
+	}
+	if _, ok := message["content"]; ok {
+		t.Fatalf("payload message included NULL content: %#v", message)
+	}
+}
+
+func TestReadPrivacyOptionsControlRawPayloadFields(t *testing.T) {
+	root := t.TempDir()
+	dbPath := createStateDB(t, filepath.Join(root, "state.db"))
+	db := openTestSQLiteDB(t, dbPath)
+	insertHermesSession(t, db, "sess-1", "discord", "gpt-test", "Privacy", "secret system prompt", 100)
+	insertHermesMessage(t, db, 1, "sess-1", "assistant", "answer", 101, map[string]any{
+		"reasoning":             "hidden reasoning",
+		"reasoning_content":     "hidden content",
+		"reasoning_details":     `[{"type":"summary"}]`,
+		"codex_reasoning_items": `[{"text":"think"}]`,
+		"codex_message_items":   `[{"text":"answer"}]`,
+	})
+	insertHermesMessage(t, db, 2, "sess-1", "tool", "raw tool output", 102, map[string]any{
+		"tool_call_id": "call-1",
+		"tool_calls":   `[{"id":"call-1"}]`,
+		"tool_name":    "lookup",
+	})
+	artifact := sourceapi.Artifact{ID: "art", Locator: dbPath, ProjectLocator: root}
+
+	defaultEnvelopes, _, err := New().Read(context.Background(), sourceapi.Config{}, artifact, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("default Read() error = %v", err)
+	}
+	assistantDefault := decodeRawPayload(t, defaultEnvelopes[0])
+	defaultMessage := assistantDefault["message"].(map[string]any)
+	defaultSession := assistantDefault["session"].(map[string]any)
+	if _, ok := defaultSession["system_prompt"]; ok {
+		t.Fatalf("default payload included system_prompt: %#v", defaultSession)
+	}
+	for _, key := range []string{"reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items"} {
+		if _, ok := defaultMessage[key]; ok {
+			t.Fatalf("default payload included reasoning key %s: %#v", key, defaultMessage)
+		}
+	}
+	defaultTool := decodeRawPayload(t, defaultEnvelopes[1])["message"].(map[string]any)
+	if defaultTool["content"] != "raw tool output" || defaultTool["tool_call_id"] != "call-1" || defaultTool["tool_name"] != "lookup" || defaultTool["tool_calls"] == nil {
+		t.Fatalf("default tool payload did not preserve raw tool fields: %#v", defaultTool)
+	}
+
+	withSystemPrompt, _, err := New().Read(context.Background(), sourceapi.Config{Options: map[string]string{"include_system_prompt": "true"}}, artifact, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("include_system_prompt Read() error = %v", err)
+	}
+	if got := decodeRawPayload(t, withSystemPrompt[0])["session"].(map[string]any)["system_prompt"]; got != "secret system prompt" {
+		t.Fatalf("system_prompt = %#v, want secret system prompt", got)
+	}
+
+	withReasoning, _, err := New().Read(context.Background(), sourceapi.Config{Options: map[string]string{"include_reasoning": "true"}}, artifact, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("include_reasoning Read() error = %v", err)
+	}
+	reasoningMessage := decodeRawPayload(t, withReasoning[0])["message"].(map[string]any)
+	for _, key := range []string{"reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items"} {
+		if reasoningMessage[key] == nil {
+			t.Fatalf("include_reasoning payload missing %s: %#v", key, reasoningMessage)
+		}
+	}
+
+	withoutToolOutput, _, err := New().Read(context.Background(), sourceapi.Config{Options: map[string]string{"include_raw_tool_output": "false"}}, artifact, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("include_raw_tool_output=false Read() error = %v", err)
+	}
+	suppressedTool := decodeRawPayload(t, withoutToolOutput[1])["message"].(map[string]any)
+	if suppressedTool["id"] != float64(2) || suppressedTool["role"] != "tool" || suppressedTool["session_id"] != "sess-1" {
+		t.Fatalf("suppressed tool payload lost event structure: %#v", suppressedTool)
+	}
+	for _, key := range []string{"content", "tool_call_id", "tool_calls", "tool_name"} {
+		if _, ok := suppressedTool[key]; ok {
+			t.Fatalf("include_raw_tool_output=false included %s: %#v", key, suppressedTool)
+		}
+	}
+}
+
 func TestValidateHermesSchemaReportsMissingSessionsColumn(t *testing.T) {
 	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), `
 CREATE TABLE sessions (
@@ -678,6 +854,54 @@ func verifyHermesStateDB(t *testing.T, db *sql.DB) {
 		if err := db.QueryRow("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?", table).Scan(&name); err != nil {
 			t.Fatalf("verify Hermes state DB table %q: %v", table, err)
 		}
+	}
+}
+
+func discoveredArtifactForPath(t *testing.T, root, dbPath string) sourceapi.Artifact {
+	t.Helper()
+	artifact, ok, err := artifactForDB(root, "default", dbPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("artifactForDB(%q) ok = false, want true", dbPath)
+	}
+	return artifact
+}
+
+func decodeRawPayload(t *testing.T, envelope schema.RawEnvelope) map[string]any {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(envelope.RawPayload, &payload); err != nil {
+		t.Fatalf("unmarshal raw payload: %v", err)
+	}
+	return payload
+}
+
+func firstCursorValue(envelopes []schema.RawEnvelope) string {
+	if len(envelopes) == 0 {
+		return ""
+	}
+	return envelopes[0].Cursor.Value
+}
+
+func assertCheckpoint(t *testing.T, checkpoint sourceapi.Checkpoint, cursor, fingerprint, dbPath string) {
+	t.Helper()
+	if checkpoint.Cursor != cursor {
+		t.Fatalf("checkpoint.Cursor = %q, want %q", checkpoint.Cursor, cursor)
+	}
+	if checkpoint.ArtifactFingerprint != fingerprint {
+		t.Fatalf("checkpoint.ArtifactFingerprint = %q, want %q", checkpoint.ArtifactFingerprint, fingerprint)
+	}
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.LastObservedSize != info.Size() {
+		t.Fatalf("checkpoint.LastObservedSize = %d, want %d", checkpoint.LastObservedSize, info.Size())
+	}
+	if !checkpoint.LastObservedModTime.Equal(info.ModTime().UTC()) {
+		t.Fatalf("checkpoint.LastObservedModTime = %s, want %s", checkpoint.LastObservedModTime.Format(time.RFC3339Nano), info.ModTime().UTC().Format(time.RFC3339Nano))
 	}
 }
 

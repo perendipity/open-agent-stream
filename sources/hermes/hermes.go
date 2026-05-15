@@ -307,6 +307,10 @@ func requiredMessagesColumns() []string {
 
 func (a *Adapter) Read(ctx context.Context, cfg sourceapi.Config, artifact sourceapi.Artifact, checkpoint sourceapi.Checkpoint) ([]schema.RawEnvelope, sourceapi.Checkpoint, error) {
 	options := parseReadOptions(cfg.Options)
+	artifactInfo, err := os.Stat(expandPath(artifact.Locator))
+	if err != nil {
+		return nil, checkpoint, fmt.Errorf("stat Hermes SQLite database: %w", err)
+	}
 
 	dbURL := url.URL{Scheme: "file", Path: expandPath(artifact.Locator)}
 	query := dbURL.Query()
@@ -324,7 +328,8 @@ func (a *Adapter) Read(ctx context.Context, cfg sourceapi.Config, artifact sourc
 	}
 
 	lastMessageID := int64(0)
-	if strings.TrimSpace(checkpoint.Cursor) != "" {
+	useCheckpointCursor := checkpoint.ArtifactFingerprint == "" || checkpoint.ArtifactFingerprint == artifact.Fingerprint
+	if useCheckpointCursor && strings.TrimSpace(checkpoint.Cursor) != "" {
 		parsed, err := strconv.ParseInt(strings.TrimSpace(checkpoint.Cursor), 10, 64)
 		if err != nil {
 			return nil, checkpoint, fmt.Errorf("parse Hermes checkpoint cursor %q as message id: %w", checkpoint.Cursor, err)
@@ -409,7 +414,7 @@ ORDER BY m.id ASC`, lastMessageID)
 			},
 			ObservedAt:      observedAt,
 			SourceTimestamp: sourceTimestamp,
-			RawKind:         "message." + nullStringValue(row.role),
+			RawKind:         hermesRawKind(row.role),
 			RawPayload:      rawPayload,
 			ContentHash:     schema.HashBytes(rawPayload),
 			ParseHints: schema.ParseHints{
@@ -425,9 +430,15 @@ ORDER BY m.id ASC`, lastMessageID)
 	}
 
 	nextCheckpoint := checkpoint
+	if !useCheckpointCursor {
+		nextCheckpoint = sourceapi.Checkpoint{}
+	}
 	if latestMessageID != lastMessageID {
 		nextCheckpoint.Cursor = strconv.FormatInt(latestMessageID, 10)
 	}
+	nextCheckpoint.ArtifactFingerprint = artifact.Fingerprint
+	nextCheckpoint.LastObservedSize = artifactInfo.Size()
+	nextCheckpoint.LastObservedModTime = artifactInfo.ModTime().UTC()
 	return envelopes, nextCheckpoint, nil
 }
 
@@ -469,12 +480,14 @@ func buildHermesRawPayload(row hermesMessageRow, options readOptions) map[string
 	message := map[string]any{"id": row.id}
 	putString(message, "session_id", row.sessionID)
 	putString(message, "role", row.role)
-	if options.includeRawToolOutput || !strings.EqualFold(nullStringValue(row.role), "tool") {
+	isToolMessage := strings.EqualFold(nullStringValue(row.role), "tool")
+	includeToolOutput := options.includeRawToolOutput || !isToolMessage
+	if includeToolOutput {
 		putString(message, "content", row.content)
+		putString(message, "tool_call_id", row.toolCallID)
+		putString(message, "tool_calls", row.toolCalls)
+		putString(message, "tool_name", row.toolName)
 	}
-	putString(message, "tool_call_id", row.toolCallID)
-	putString(message, "tool_calls", row.toolCalls)
-	putString(message, "tool_name", row.toolName)
 	putFloat(message, "timestamp", row.timestamp)
 	putInt(message, "token_count", row.tokenCount)
 	putString(message, "finish_reason", row.finishReason)
@@ -507,6 +520,14 @@ func buildHermesRawPayload(row hermesMessageRow, options readOptions) map[string
 		payload["session"] = session
 	}
 	return payload
+}
+
+func hermesRawKind(role sql.NullString) string {
+	roleValue := strings.TrimSpace(nullStringValue(role))
+	if roleValue == "" {
+		roleValue = "unknown"
+	}
+	return "message." + roleValue
 }
 
 func putString(payload map[string]any, key string, value sql.NullString) {
