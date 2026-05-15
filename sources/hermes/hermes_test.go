@@ -2,6 +2,7 @@ package hermes
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
+	_ "modernc.org/sqlite"
 )
 
 func TestNewTypeAndCapabilities(t *testing.T) {
@@ -211,19 +213,98 @@ func TestReadReturnsExplicitUnimplementedError(t *testing.T) {
 	}
 }
 
+type hermesStateFixture struct{}
+
 func createStateDB(t *testing.T, path string) string {
 	t.Helper()
+	return createHermesStateDB(t, path, hermesStateFixture{})
+}
+
+func createHermesStateDB(t *testing.T, path string, fixture hermesStateFixture) string {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("sqlite db placeholder"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := filepath.Abs(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	db, err := sql.Open("sqlite", resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close test Hermes state DB: %v", err)
+		}
+	})
+	if _, err := db.Exec(hermesStateSchema); err != nil {
+		t.Fatal(err)
+	}
+	_ = fixture
+	verifyHermesStateDB(t, db)
 	return resolved
+}
+
+const hermesStateSchema = `
+CREATE TABLE IF NOT EXISTS sessions (
+	id TEXT PRIMARY KEY,
+	source TEXT,
+	model TEXT,
+	model_config TEXT,
+	system_prompt TEXT,
+	parent_session_id TEXT,
+	started_at REAL,
+	ended_at REAL,
+	end_reason TEXT,
+	message_count INTEGER,
+	tool_call_count INTEGER,
+	input_tokens INTEGER,
+	output_tokens INTEGER,
+	cache_read_tokens INTEGER,
+	cache_write_tokens INTEGER,
+	reasoning_tokens INTEGER,
+	billing_provider TEXT,
+	billing_base_url TEXT,
+	billing_mode TEXT,
+	estimated_cost_usd REAL,
+	actual_cost_usd REAL,
+	cost_status TEXT,
+	cost_source TEXT,
+	pricing_version TEXT,
+	title TEXT,
+	api_call_count INTEGER,
+	handoff_state TEXT,
+	handoff_platform TEXT,
+	handoff_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id TEXT,
+	role TEXT,
+	content TEXT,
+	tool_call_id TEXT,
+	tool_calls TEXT,
+	tool_name TEXT,
+	timestamp REAL,
+	token_count INTEGER,
+	finish_reason TEXT,
+	reasoning TEXT,
+	reasoning_content TEXT,
+	reasoning_details TEXT,
+	codex_reasoning_items TEXT,
+	codex_message_items TEXT
+);`
+
+func verifyHermesStateDB(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, table := range []string{"sessions", "messages"} {
+		var name string
+		if err := db.QueryRow("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?", table).Scan(&name); err != nil {
+			t.Fatalf("verify Hermes state DB table %q: %v", table, err)
+		}
+	}
 }
 
 func assertArtifact(t *testing.T, artifact sourceapi.Artifact, profile, dbPath, root string) {
