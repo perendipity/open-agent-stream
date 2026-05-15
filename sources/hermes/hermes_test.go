@@ -201,7 +201,9 @@ func TestDiscoverExplicitDBPathAllowsSymlink(t *testing.T) {
 }
 
 func TestReadReturnsExplicitUnimplementedError(t *testing.T) {
-	_, checkpoint, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{}, sourceapi.Checkpoint{Cursor: "cursor-1"})
+	dbPath := createStateDB(t, filepath.Join(t.TempDir(), "state.db"))
+
+	_, checkpoint, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{Cursor: "cursor-1"})
 	if err == nil {
 		t.Fatal("Read() error = nil, want explicit unimplemented error")
 	}
@@ -210,6 +212,109 @@ func TestReadReturnsExplicitUnimplementedError(t *testing.T) {
 	}
 	if checkpoint.Cursor != "cursor-1" {
 		t.Fatalf("Read() checkpoint cursor = %q, want cursor-1", checkpoint.Cursor)
+	}
+}
+
+func TestReadReturnsInvalidSQLiteErrorBeforeUnimplemented(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-sqlite.db")
+	if err := os.WriteFile(path, []byte("this is not a sqlite database"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: path}, sourceapi.Checkpoint{})
+	if err == nil {
+		t.Fatal("Read() error = nil, want invalid SQLite error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "sqlite") {
+		t.Fatalf("Read() error = %q, want mention sqlite", err.Error())
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("Read() error = %q, want schema/open error before unimplemented", err.Error())
+	}
+}
+
+func TestReadValidatesHermesSchemaBeforeUnimplemented(t *testing.T) {
+	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), `CREATE TABLE sessions (id TEXT PRIMARY KEY);`)
+
+	_, _, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{})
+	if err == nil {
+		t.Fatal("Read() error = nil, want missing messages table error")
+	}
+	if !strings.Contains(err.Error(), "messages") {
+		t.Fatalf("Read() error = %q, want mention missing messages table", err.Error())
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("Read() error = %q, want schema error before unimplemented", err.Error())
+	}
+}
+
+func TestValidateHermesSchemaReportsMissingMessagesColumn(t *testing.T) {
+	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), `
+CREATE TABLE messages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id TEXT,
+	role TEXT
+);`)
+	db := openTestSQLiteDB(t, dbPath)
+
+	err := validateHermesSchema(context.Background(), db)
+	if err == nil {
+		t.Fatal("validateHermesSchema() error = nil, want missing column error")
+	}
+	if !strings.Contains(err.Error(), "content") {
+		t.Fatalf("validateHermesSchema() error = %q, want mention missing content column", err.Error())
+	}
+}
+
+func TestParseReadOptionsDefaults(t *testing.T) {
+	got := parseReadOptions(nil)
+	want := readOptions{includeSystemPrompt: false, includeReasoning: false, includeRawToolOutput: true}
+	if got != want {
+		t.Fatalf("parseReadOptions(nil) = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseReadOptionsExplicitTruthyValues(t *testing.T) {
+	got := parseReadOptions(map[string]string{
+		"include_system_prompt": "true",
+		"include_reasoning":     "1",
+	})
+	if !got.includeSystemPrompt {
+		t.Fatalf("includeSystemPrompt = false, want true")
+	}
+	if !got.includeReasoning {
+		t.Fatalf("includeReasoning = false, want true")
+	}
+}
+
+func TestParseReadOptionsIncludeRawToolOutputDefaultAndFalse(t *testing.T) {
+	if got := parseReadOptions(nil); !got.includeRawToolOutput {
+		t.Fatalf("includeRawToolOutput default = false, want true")
+	}
+	got := parseReadOptions(map[string]string{"include_raw_tool_output": "off"})
+	if got.includeRawToolOutput {
+		t.Fatalf("includeRawToolOutput = true, want false")
+	}
+}
+
+func TestBoolOptionUnknownAndEmptyValuesFallBackToDefault(t *testing.T) {
+	options := map[string]string{
+		"empty":   "",
+		"unknown": "sure",
+		"yes":     "YES",
+		"no":      "n",
+	}
+	if !boolOption(options, "empty", true) {
+		t.Fatalf("empty value did not fall back to true default")
+	}
+	if boolOption(options, "unknown", false) {
+		t.Fatalf("unknown value did not fall back to false default")
+	}
+	if !boolOption(options, "yes", false) {
+		t.Fatalf("truthy value did not parse true")
+	}
+	if boolOption(options, "no", true) {
+		t.Fatalf("falsey value did not parse false")
 	}
 }
 
@@ -222,6 +327,15 @@ func createStateDB(t *testing.T, path string) string {
 
 func createHermesStateDB(t *testing.T, path string, fixture hermesStateFixture) string {
 	t.Helper()
+	resolved := createSQLiteDB(t, path, hermesStateSchema)
+	db := openTestSQLiteDB(t, resolved)
+	_ = fixture
+	verifyHermesStateDB(t, db)
+	return resolved
+}
+
+func createSQLiteDB(t *testing.T, path, schema string) string {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -229,21 +343,25 @@ func createHermesStateDB(t *testing.T, path string, fixture hermesStateFixture) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", resolved)
+	db := openTestSQLiteDB(t, resolved)
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+func openTestSQLiteDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		if err := db.Close(); err != nil {
-			t.Errorf("close test Hermes state DB: %v", err)
+			t.Errorf("close test SQLite DB: %v", err)
 		}
 	})
-	if _, err := db.Exec(hermesStateSchema); err != nil {
-		t.Fatal(err)
-	}
-	_ = fixture
-	verifyHermesStateDB(t, db)
-	return resolved
+	return db
 }
 
 const hermesStateSchema = `

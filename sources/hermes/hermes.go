@@ -2,8 +2,10 @@ package hermes
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
+	_ "modernc.org/sqlite"
 )
 
 type Adapter struct{}
@@ -192,6 +195,104 @@ func isPathWithinRoot(root, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-func (a *Adapter) Read(_ context.Context, _ sourceapi.Config, _ sourceapi.Artifact, checkpoint sourceapi.Checkpoint) ([]schema.RawEnvelope, sourceapi.Checkpoint, error) {
+type readOptions struct {
+	includeSystemPrompt  bool
+	includeReasoning     bool
+	includeRawToolOutput bool
+}
+
+func parseReadOptions(options map[string]string) readOptions {
+	return readOptions{
+		includeSystemPrompt:  boolOption(options, "include_system_prompt", false),
+		includeReasoning:     boolOption(options, "include_reasoning", false),
+		includeRawToolOutput: boolOption(options, "include_raw_tool_output", true),
+	}
+}
+
+func boolOption(options map[string]string, key string, defaultValue bool) bool {
+	value := strings.TrimSpace(strings.ToLower(options[key]))
+	switch value {
+	case "true", "1", "yes", "y", "on":
+		return true
+	case "false", "0", "no", "n", "off":
+		return false
+	default:
+		return defaultValue
+	}
+}
+
+func validateHermesSchema(ctx context.Context, db *sql.DB) error {
+	var tableName string
+	if err := db.QueryRowContext(ctx, "SELECT name FROM sqlite_schema WHERE type IN ('table', 'view') AND name = ?", "messages").Scan(&tableName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("hermes SQLite schema missing required table messages")
+		}
+		return fmt.Errorf("invalid Hermes SQLite database: inspect messages table: %w", err)
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT name FROM pragma_table_info('messages')")
+	if err != nil {
+		return fmt.Errorf("invalid Hermes SQLite database: inspect messages columns: %w", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return fmt.Errorf("invalid Hermes SQLite database: scan messages column: %w", err)
+		}
+		columns[column] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("invalid Hermes SQLite database: inspect messages columns: %w", err)
+	}
+
+	for _, column := range requiredMessagesColumns() {
+		if _, ok := columns[column]; !ok {
+			return fmt.Errorf("hermes SQLite schema missing required messages column %s", column)
+		}
+	}
+	return nil
+}
+
+func requiredMessagesColumns() []string {
+	return []string{
+		"id",
+		"session_id",
+		"role",
+		"content",
+		"tool_call_id",
+		"tool_calls",
+		"tool_name",
+		"timestamp",
+		"token_count",
+		"finish_reason",
+		"reasoning",
+		"reasoning_content",
+		"reasoning_details",
+		"codex_reasoning_items",
+		"codex_message_items",
+	}
+}
+
+func (a *Adapter) Read(ctx context.Context, cfg sourceapi.Config, artifact sourceapi.Artifact, checkpoint sourceapi.Checkpoint) ([]schema.RawEnvelope, sourceapi.Checkpoint, error) {
+	_ = parseReadOptions(cfg.Options)
+
+	dbURL := url.URL{Scheme: "file", Path: expandPath(artifact.Locator)}
+	query := dbURL.Query()
+	query.Set("mode", "ro")
+	dbURL.RawQuery = query.Encode()
+
+	db, err := sql.Open("sqlite", dbURL.String())
+	if err != nil {
+		return nil, checkpoint, fmt.Errorf("open Hermes SQLite database read-only: %w", err)
+	}
+	defer db.Close()
+
+	if err := validateHermesSchema(ctx, db); err != nil {
+		return nil, checkpoint, err
+	}
+
 	return nil, checkpoint, fmt.Errorf("hermes_local read is not implemented yet; this adapter currently supports discovery only")
 }
