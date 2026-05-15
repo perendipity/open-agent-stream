@@ -337,6 +337,10 @@ func TestReadEmitsRawHermesMessageEnvelopes(t *testing.T) {
 		if envelope.ParseHints.SourceSessionKey != "sess-1" || envelope.ParseHints.ProjectHint != root {
 			t.Fatalf("envelope[%d].ParseHints = %#v", i, envelope.ParseHints)
 		}
+		wantCapabilities := capabilitiesToStrings(New().Capabilities())
+		if !reflect.DeepEqual(envelope.ParseHints.Capabilities, wantCapabilities) {
+			t.Fatalf("envelope[%d].ParseHints.Capabilities = %#v, want %#v", i, envelope.ParseHints.Capabilities, wantCapabilities)
+		}
 		if envelope.SourceTimestamp == nil || envelope.SourceTimestamp.Location() != time.UTC {
 			t.Fatalf("envelope[%d].SourceTimestamp = %#v, want UTC timestamp", i, envelope.SourceTimestamp)
 		}
@@ -405,7 +409,7 @@ func TestReadCheckpointIsArtifactSafeAndIncremental(t *testing.T) {
 	if len(first) != 2 {
 		t.Fatalf("first Read() returned %d envelopes, want 2", len(first))
 	}
-	assertCheckpoint(t, checkpoint, "2", artifact.Fingerprint, dbPath)
+	assertCheckpoint(t, checkpoint, "2", artifact.ID, dbPath)
 
 	second, secondCheckpoint, err := adapter.Read(context.Background(), cfg, artifact, checkpoint)
 	if err != nil {
@@ -414,17 +418,24 @@ func TestReadCheckpointIsArtifactSafeAndIncremental(t *testing.T) {
 	if len(second) != 0 {
 		t.Fatalf("second Read() returned %d envelopes, want 0", len(second))
 	}
-	assertCheckpoint(t, secondCheckpoint, "2", artifact.Fingerprint, dbPath)
+	assertCheckpoint(t, secondCheckpoint, "2", artifact.ID, dbPath)
 
 	insertHermesMessage(t, db, 3, "sess-1", "user", "three", 103, nil)
-	afterAppend, appendCheckpoint, err := adapter.Read(context.Background(), cfg, artifact, secondCheckpoint)
+	rediscoveredArtifact := discoveredArtifactForPath(t, root, dbPath)
+	if rediscoveredArtifact.ID != artifact.ID {
+		t.Fatalf("rediscovered artifact ID = %q, want stable ID %q", rediscoveredArtifact.ID, artifact.ID)
+	}
+	if rediscoveredArtifact.Fingerprint == artifact.Fingerprint {
+		t.Fatalf("rediscovered artifact fingerprint did not change after append: %q", rediscoveredArtifact.Fingerprint)
+	}
+	afterAppend, appendCheckpoint, err := adapter.Read(context.Background(), cfg, rediscoveredArtifact, secondCheckpoint)
 	if err != nil {
 		t.Fatalf("append Read() error = %v", err)
 	}
 	if len(afterAppend) != 1 || afterAppend[0].Cursor.Value != "3" {
 		t.Fatalf("append Read() got %d envelopes cursor %q, want one cursor 3", len(afterAppend), firstCursorValue(afterAppend))
 	}
-	assertCheckpoint(t, appendCheckpoint, "3", artifact.Fingerprint, dbPath)
+	assertCheckpoint(t, appendCheckpoint, "3", rediscoveredArtifact.ID, dbPath)
 
 	otherRoot := t.TempDir()
 	otherDBPath := createStateDB(t, filepath.Join(otherRoot, "state.db"))
@@ -439,7 +450,7 @@ func TestReadCheckpointIsArtifactSafeAndIncremental(t *testing.T) {
 	if len(crossArtifact) != 1 || crossArtifact[0].Cursor.Value != "1" {
 		t.Fatalf("cross-artifact Read() got %d envelopes cursor %q, want one cursor 1", len(crossArtifact), firstCursorValue(crossArtifact))
 	}
-	assertCheckpoint(t, crossCheckpoint, "1", otherArtifact.Fingerprint, otherDBPath)
+	assertCheckpoint(t, crossCheckpoint, "1", otherArtifact.ID, otherDBPath)
 }
 
 func TestReadInvalidCheckpointCursorReturnsError(t *testing.T) {
@@ -502,9 +513,10 @@ func TestReadPrivacyOptionsControlRawPayloadFields(t *testing.T) {
 		"codex_message_items":   `[{"text":"answer"}]`,
 	})
 	insertHermesMessage(t, db, 2, "sess-1", "tool", "raw tool output", 102, map[string]any{
-		"tool_call_id": "call-1",
-		"tool_calls":   `[{"id":"call-1"}]`,
-		"tool_name":    "lookup",
+		"tool_call_id":        "call-1",
+		"tool_calls":          `[{"id":"call-1"}]`,
+		"tool_name":           "lookup",
+		"codex_message_items": `[{"tool_result":"raw tool output"}]`,
 	})
 	artifact := sourceapi.Artifact{ID: "art", Locator: dbPath, ProjectLocator: root}
 
@@ -524,7 +536,7 @@ func TestReadPrivacyOptionsControlRawPayloadFields(t *testing.T) {
 		}
 	}
 	defaultTool := decodeRawPayload(t, defaultEnvelopes[1])["message"].(map[string]any)
-	if defaultTool["content"] != "raw tool output" || defaultTool["tool_call_id"] != "call-1" || defaultTool["tool_name"] != "lookup" || defaultTool["tool_calls"] == nil {
+	if defaultTool["content"] != "raw tool output" || defaultTool["tool_call_id"] != "call-1" || defaultTool["tool_name"] != "lookup" || defaultTool["tool_calls"] == nil || defaultTool["codex_message_items"] == nil {
 		t.Fatalf("default tool payload did not preserve raw tool fields: %#v", defaultTool)
 	}
 
@@ -555,7 +567,7 @@ func TestReadPrivacyOptionsControlRawPayloadFields(t *testing.T) {
 	if suppressedTool["id"] != float64(2) || suppressedTool["role"] != "tool" || suppressedTool["session_id"] != "sess-1" {
 		t.Fatalf("suppressed tool payload lost event structure: %#v", suppressedTool)
 	}
-	for _, key := range []string{"content", "tool_call_id", "tool_calls", "tool_name"} {
+	for _, key := range []string{"content", "tool_call_id", "tool_calls", "tool_name", "codex_message_items"} {
 		if _, ok := suppressedTool[key]; ok {
 			t.Fatalf("include_raw_tool_output=false included %s: %#v", key, suppressedTool)
 		}

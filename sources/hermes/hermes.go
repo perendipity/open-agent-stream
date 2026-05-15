@@ -40,6 +40,14 @@ func (a *Adapter) Capabilities() []sourceapi.Capability {
 	}
 }
 
+func capabilitiesToStrings(values []sourceapi.Capability) []string {
+	out := make([]string, len(values))
+	for idx := range values {
+		out[idx] = string(values[idx])
+	}
+	return out
+}
+
 func (a *Adapter) Discover(_ context.Context, cfg sourceapi.Config) ([]sourceapi.Artifact, error) {
 	return discoverDBArtifacts(cfg.Root, cfg.Options)
 }
@@ -328,7 +336,8 @@ func (a *Adapter) Read(ctx context.Context, cfg sourceapi.Config, artifact sourc
 	}
 
 	lastMessageID := int64(0)
-	useCheckpointCursor := checkpoint.ArtifactFingerprint == "" || checkpoint.ArtifactFingerprint == artifact.Fingerprint
+	artifactCheckpointToken := artifact.ID
+	useCheckpointCursor := checkpoint.ArtifactFingerprint == "" || (artifactCheckpointToken != "" && checkpoint.ArtifactFingerprint == artifactCheckpointToken)
 	if useCheckpointCursor && strings.TrimSpace(checkpoint.Cursor) != "" {
 		parsed, err := strconv.ParseInt(strings.TrimSpace(checkpoint.Cursor), 10, 64)
 		if err != nil {
@@ -356,6 +365,7 @@ ORDER BY m.id ASC`, lastMessageID)
 	observedAt := time.Now().UTC()
 	envelopes := []schema.RawEnvelope{}
 	latestMessageID := lastMessageID
+	capabilities := capabilitiesToStrings(a.Capabilities())
 	for rows.Next() {
 		var row hermesMessageRow
 		if err := rows.Scan(
@@ -420,6 +430,7 @@ ORDER BY m.id ASC`, lastMessageID)
 			ParseHints: schema.ParseHints{
 				SourceSessionKey: nullStringValue(row.sessionID),
 				ProjectHint:      artifact.ProjectLocator,
+				Capabilities:     append([]string(nil), capabilities...),
 			},
 		}
 		envelopes = append(envelopes, schema.EnsureEnvelopeID(envelope))
@@ -436,7 +447,7 @@ ORDER BY m.id ASC`, lastMessageID)
 	if latestMessageID != lastMessageID {
 		nextCheckpoint.Cursor = strconv.FormatInt(latestMessageID, 10)
 	}
-	nextCheckpoint.ArtifactFingerprint = artifact.Fingerprint
+	nextCheckpoint.ArtifactFingerprint = artifactCheckpointToken
 	nextCheckpoint.LastObservedSize = artifactInfo.Size()
 	nextCheckpoint.LastObservedModTime = artifactInfo.ModTime().UTC()
 	return envelopes, nextCheckpoint, nil
@@ -497,7 +508,9 @@ func buildHermesRawPayload(row hermesMessageRow, options readOptions) map[string
 		putString(message, "reasoning_details", row.reasoningDetails)
 		putString(message, "codex_reasoning_items", row.codexReasoningItems)
 	}
-	putString(message, "codex_message_items", row.codexMessageItems)
+	if includeToolOutput {
+		putString(message, "codex_message_items", row.codexMessageItems)
+	}
 
 	session := map[string]any{}
 	putString(session, "id", row.session.id)
