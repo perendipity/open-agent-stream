@@ -3,12 +3,16 @@ package hermes
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/open-agent-stream/open-agent-stream/pkg/schema"
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
 	_ "modernc.org/sqlite"
 )
@@ -200,18 +204,18 @@ func TestDiscoverExplicitDBPathAllowsSymlink(t *testing.T) {
 	assertArtifact(t, artifacts[0], "default", linkPath, root)
 }
 
-func TestReadReturnsExplicitUnimplementedError(t *testing.T) {
+func TestReadValidEmptyDatabaseReturnsNoEnvelopes(t *testing.T) {
 	dbPath := createStateDB(t, filepath.Join(t.TempDir(), "state.db"))
 
-	_, checkpoint, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{Cursor: "cursor-1"})
-	if err == nil {
-		t.Fatal("Read() error = nil, want explicit unimplemented error")
+	envelopes, checkpoint, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{Cursor: "1"})
+	if err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
 	}
-	if !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("Read() error = %q, want not implemented", err.Error())
+	if len(envelopes) != 0 {
+		t.Fatalf("Read() returned %d envelopes, want 0", len(envelopes))
 	}
-	if checkpoint.Cursor != "cursor-1" {
-		t.Fatalf("Read() checkpoint cursor = %q, want cursor-1", checkpoint.Cursor)
+	if checkpoint.Cursor != "1" {
+		t.Fatalf("Read() checkpoint cursor = %q, want 1", checkpoint.Cursor)
 	}
 }
 
@@ -263,15 +267,122 @@ func TestReadValidatesHermesSchemaBeforeUnimplemented(t *testing.T) {
 	}
 }
 
-func TestReadValidPathWithSpecialCharactersValidatesSchemaBeforeUnimplemented(t *testing.T) {
+func TestReadValidPathWithSpecialCharactersReturnsNoEnvelopes(t *testing.T) {
 	dbPath := createStateDB(t, filepath.Join(t.TempDir(), "state [with] spaces & symbols", "state.db"))
 
-	_, _, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{})
-	if err == nil {
-		t.Fatal("Read() error = nil, want explicit unimplemented error")
+	envelopes, _, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
 	}
-	if !strings.Contains(err.Error(), "not implemented") {
-		t.Fatalf("Read() error = %q, want not implemented", err.Error())
+	if len(envelopes) != 0 {
+		t.Fatalf("Read() returned %d envelopes, want 0", len(envelopes))
+	}
+}
+
+func TestReadEmitsRawHermesMessageEnvelopes(t *testing.T) {
+	root := t.TempDir()
+	dbPath := createStateDB(t, filepath.Join(root, "state.db"))
+	db := openTestSQLiteDB(t, dbPath)
+
+	insertHermesSession(t, db, "sess-1", "discord", "gpt-test", "Test Session", "secret system prompt", 100.5)
+	insertHermesMessage(t, db, 2, "sess-1", "assistant", "hi back", 124.75, map[string]any{
+		"token_count":   7,
+		"finish_reason": "stop",
+		"reasoning":     "hidden chain",
+	})
+	insertHermesMessage(t, db, 1, "sess-1", "user", "hello", 123.4, map[string]any{
+		"token_count": 3,
+		"tool_calls":  `[{"id":"call-1","name":"lookup"}]`,
+	})
+	insertHermesMessage(t, db, 3, "sess-1", "tool", "tool output", 125.25, map[string]any{
+		"tool_call_id": "call-1",
+		"tool_name":    "lookup",
+	})
+
+	artifact := sourceapi.Artifact{
+		ID:             "art-test",
+		Locator:        dbPath,
+		ProjectLocator: root,
+	}
+	cfg := sourceapi.Config{InstanceID: "instance-1"}
+	envelopes, checkpoint, err := New().Read(context.Background(), cfg, artifact, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(envelopes) != 3 {
+		t.Fatalf("Read() returned %d envelopes, want 3: %#v", len(envelopes), envelopes)
+	}
+	if checkpoint.Cursor != "3" {
+		t.Fatalf("checkpoint.Cursor = %q, want 3", checkpoint.Cursor)
+	}
+
+	wantKinds := []string{"message.user", "message.assistant", "message.tool"}
+	for i, envelope := range envelopes {
+		wantID := strconv.Itoa(i + 1)
+		if envelope.EnvelopeVersion != schema.RawEnvelopeVersion {
+			t.Fatalf("envelope[%d].EnvelopeVersion = %d, want %d", i, envelope.EnvelopeVersion, schema.RawEnvelopeVersion)
+		}
+		if envelope.SourceType != "hermes_local" || envelope.SourceInstanceID != cfg.InstanceID {
+			t.Fatalf("envelope[%d] source = %q/%q, want hermes_local/%q", i, envelope.SourceType, envelope.SourceInstanceID, cfg.InstanceID)
+		}
+		if envelope.ArtifactID != artifact.ID || envelope.ArtifactLocator != artifact.Locator || envelope.ProjectLocator != artifact.ProjectLocator {
+			t.Fatalf("envelope[%d] artifact fields = %#v, want %#v", i, envelope, artifact)
+		}
+		if envelope.RawKind != wantKinds[i] {
+			t.Fatalf("envelope[%d].RawKind = %q, want %q", i, envelope.RawKind, wantKinds[i])
+		}
+		if envelope.Cursor.Kind != "message_id" || envelope.Cursor.Value != wantID {
+			t.Fatalf("envelope[%d].Cursor = %#v, want message_id/%s", i, envelope.Cursor, wantID)
+		}
+		if envelope.ParseHints.SourceSessionKey != "sess-1" || envelope.ParseHints.ProjectHint != root {
+			t.Fatalf("envelope[%d].ParseHints = %#v", i, envelope.ParseHints)
+		}
+		if envelope.SourceTimestamp == nil || envelope.SourceTimestamp.Location() != time.UTC {
+			t.Fatalf("envelope[%d].SourceTimestamp = %#v, want UTC timestamp", i, envelope.SourceTimestamp)
+		}
+		if envelope.ContentHash == "" || envelope.EnvelopeID == "" {
+			t.Fatalf("envelope[%d] ContentHash/EnvelopeID empty: %q/%q", i, envelope.ContentHash, envelope.EnvelopeID)
+		}
+	}
+	if !envelopes[0].SourceTimestamp.Equal(time.Unix(123, 400_000_000).UTC()) {
+		t.Fatalf("first SourceTimestamp = %s, want 123.4 epoch UTC", envelopes[0].SourceTimestamp.Format(time.RFC3339Nano))
+	}
+
+	var payload struct {
+		Message map[string]any `json:"message"`
+		Session map[string]any `json:"session"`
+	}
+	if err := json.Unmarshal(envelopes[0].RawPayload, &payload); err != nil {
+		t.Fatalf("unmarshal first raw payload: %v", err)
+	}
+	if payload.Message["id"] != float64(1) || payload.Message["session_id"] != "sess-1" || payload.Message["role"] != "user" || payload.Message["content"] != "hello" {
+		t.Fatalf("first payload message = %#v", payload.Message)
+	}
+	if payload.Message["timestamp"] != 123.4 || payload.Message["token_count"] != float64(3) || payload.Message["tool_calls"] == nil {
+		t.Fatalf("first payload missing timestamp/token/tool fields: %#v", payload.Message)
+	}
+	if payload.Session["id"] != "sess-1" || payload.Session["source"] != "discord" || payload.Session["model"] != "gpt-test" || payload.Session["title"] != "Test Session" {
+		t.Fatalf("first payload session = %#v", payload.Session)
+	}
+	if _, ok := payload.Session["system_prompt"]; ok {
+		t.Fatalf("session system_prompt included by default: %#v", payload.Session)
+	}
+
+	fromCursor, cursorCheckpoint, err := New().Read(context.Background(), cfg, artifact, sourceapi.Checkpoint{Cursor: "1"})
+	if err != nil {
+		t.Fatalf("cursor Read() error = %v", err)
+	}
+	if len(fromCursor) != 2 || fromCursor[0].Cursor.Value != "2" || cursorCheckpoint.Cursor != "3" {
+		t.Fatalf("cursor Read() got %d envelopes first cursor %q checkpoint %q, want 2/2/3", len(fromCursor), fromCursor[0].Cursor.Value, cursorCheckpoint.Cursor)
+	}
+
+	firstID, firstHash := envelopes[0].EnvelopeID, envelopes[0].ContentHash
+	envelopesAgain, _, err := New().Read(context.Background(), cfg, artifact, sourceapi.Checkpoint{})
+	if err != nil {
+		t.Fatalf("second Read() error = %v", err)
+	}
+	if envelopesAgain[0].EnvelopeID != firstID || envelopesAgain[0].ContentHash != firstHash {
+		t.Fatalf("stable ids changed: got %q/%q want %q/%q", envelopesAgain[0].EnvelopeID, envelopesAgain[0].ContentHash, firstID, firstHash)
 	}
 }
 
@@ -406,6 +517,40 @@ func createHermesStateDB(t *testing.T, path string, fixture hermesStateFixture) 
 	_ = fixture
 	verifyHermesStateDB(t, db)
 	return resolved
+}
+
+func insertHermesSession(t *testing.T, db *sql.DB, id, source, model, title, systemPrompt string, startedAt float64) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO sessions (id, source, model, system_prompt, started_at, title, input_tokens, output_tokens, reasoning_tokens, estimated_cost_usd, actual_cost_usd)
+VALUES (?, ?, ?, ?, ?, ?, 11, 13, 0, 0.01, 0.02)`, id, source, model, systemPrompt, startedAt, title)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertHermesMessage(t *testing.T, db *sql.DB, id int64, sessionID, role, content string, timestamp float64, fields map[string]any) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_calls, tool_name, timestamp, token_count, finish_reason, reasoning, reasoning_content, reasoning_details, codex_reasoning_items, codex_message_items)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id,
+		sessionID,
+		role,
+		content,
+		fields["tool_call_id"],
+		fields["tool_calls"],
+		fields["tool_name"],
+		timestamp,
+		fields["token_count"],
+		fields["finish_reason"],
+		fields["reasoning"],
+		fields["reasoning_content"],
+		fields["reasoning_details"],
+		fields["codex_reasoning_items"],
+		fields["codex_message_items"],
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func createSQLiteDB(t *testing.T, path, schema string) string {
