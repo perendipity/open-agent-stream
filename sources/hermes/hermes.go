@@ -222,17 +222,27 @@ func boolOption(options map[string]string, key string, defaultValue bool) bool {
 }
 
 func validateHermesSchema(ctx context.Context, db *sql.DB) error {
+	if err := validateHermesTable(ctx, db, "sessions", requiredSessionsColumns()); err != nil {
+		return err
+	}
+	if err := validateHermesTable(ctx, db, "messages", requiredMessagesColumns()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateHermesTable(ctx context.Context, db *sql.DB, table string, requiredColumns []string) error {
 	var tableName string
-	if err := db.QueryRowContext(ctx, "SELECT name FROM sqlite_schema WHERE type IN ('table', 'view') AND name = ?", "messages").Scan(&tableName); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?", table).Scan(&tableName); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("hermes SQLite schema missing required table messages")
+			return fmt.Errorf("hermes SQLite schema missing required table %s", table)
 		}
-		return fmt.Errorf("invalid Hermes SQLite database: inspect messages table: %w", err)
+		return fmt.Errorf("invalid Hermes SQLite database: inspect %s table: %w", table, err)
 	}
 
-	rows, err := db.QueryContext(ctx, "SELECT name FROM pragma_table_info('messages')")
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT name FROM pragma_table_info(%q)", table))
 	if err != nil {
-		return fmt.Errorf("invalid Hermes SQLite database: inspect messages columns: %w", err)
+		return fmt.Errorf("invalid Hermes SQLite database: inspect %s columns: %w", table, err)
 	}
 	defer rows.Close()
 
@@ -240,20 +250,37 @@ func validateHermesSchema(ctx context.Context, db *sql.DB) error {
 	for rows.Next() {
 		var column string
 		if err := rows.Scan(&column); err != nil {
-			return fmt.Errorf("invalid Hermes SQLite database: scan messages column: %w", err)
+			return fmt.Errorf("invalid Hermes SQLite database: scan %s column: %w", table, err)
 		}
 		columns[column] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("invalid Hermes SQLite database: inspect messages columns: %w", err)
+		return fmt.Errorf("invalid Hermes SQLite database: inspect %s columns: %w", table, err)
 	}
 
-	for _, column := range requiredMessagesColumns() {
+	for _, column := range requiredColumns {
 		if _, ok := columns[column]; !ok {
-			return fmt.Errorf("hermes SQLite schema missing required messages column %s", column)
+			return fmt.Errorf("hermes SQLite schema missing required %s column %s", table, column)
 		}
 	}
 	return nil
+}
+
+func requiredSessionsColumns() []string {
+	return []string{
+		"id",
+		"source",
+		"model",
+		"system_prompt",
+		"started_at",
+		"ended_at",
+		"title",
+		"input_tokens",
+		"output_tokens",
+		"reasoning_tokens",
+		"estimated_cost_usd",
+		"actual_cost_usd",
+	}
 }
 
 func requiredMessagesColumns() []string {

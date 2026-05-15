@@ -233,8 +233,23 @@ func TestReadReturnsInvalidSQLiteErrorBeforeUnimplemented(t *testing.T) {
 	}
 }
 
+func TestReadReturnsMissingSessionsTableErrorBeforeUnimplemented(t *testing.T) {
+	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), messagesTableSchema)
+
+	_, _, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{})
+	if err == nil {
+		t.Fatal("Read() error = nil, want missing sessions table error")
+	}
+	if !strings.Contains(err.Error(), "sessions") {
+		t.Fatalf("Read() error = %q, want mention missing sessions table", err.Error())
+	}
+	if strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("Read() error = %q, want schema error before unimplemented", err.Error())
+	}
+}
+
 func TestReadValidatesHermesSchemaBeforeUnimplemented(t *testing.T) {
-	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), `CREATE TABLE sessions (id TEXT PRIMARY KEY);`)
+	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), sessionsTableSchema)
 
 	_, _, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{})
 	if err == nil {
@@ -248,8 +263,67 @@ func TestReadValidatesHermesSchemaBeforeUnimplemented(t *testing.T) {
 	}
 }
 
-func TestValidateHermesSchemaReportsMissingMessagesColumn(t *testing.T) {
+func TestReadValidPathWithSpecialCharactersValidatesSchemaBeforeUnimplemented(t *testing.T) {
+	dbPath := createStateDB(t, filepath.Join(t.TempDir(), "state [with] spaces & symbols", "state.db"))
+
+	_, _, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{})
+	if err == nil {
+		t.Fatal("Read() error = nil, want explicit unimplemented error")
+	}
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("Read() error = %q, want not implemented", err.Error())
+	}
+}
+
+func TestValidateHermesSchemaReportsMissingSessionsColumn(t *testing.T) {
 	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), `
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY,
+	source TEXT
+);
+`+messagesTableSchema)
+	db := openTestSQLiteDB(t, dbPath)
+
+	err := validateHermesSchema(context.Background(), db)
+	if err == nil {
+		t.Fatal("validateHermesSchema() error = nil, want missing column error")
+	}
+	if !strings.Contains(err.Error(), "model") {
+		t.Fatalf("validateHermesSchema() error = %q, want mention missing model column", err.Error())
+	}
+}
+
+func TestValidateHermesSchemaRequiresRealTables(t *testing.T) {
+	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), `
+CREATE TABLE sessions_base (
+	id TEXT PRIMARY KEY,
+	source TEXT,
+	model TEXT,
+	system_prompt TEXT,
+	started_at REAL,
+	ended_at REAL,
+	title TEXT,
+	input_tokens INTEGER,
+	output_tokens INTEGER,
+	reasoning_tokens INTEGER,
+	estimated_cost_usd REAL,
+	actual_cost_usd REAL
+);
+CREATE VIEW sessions AS SELECT * FROM sessions_base;
+`+messagesTableSchema)
+	db := openTestSQLiteDB(t, dbPath)
+
+	err := validateHermesSchema(context.Background(), db)
+	if err == nil {
+		t.Fatal("validateHermesSchema() error = nil, want missing table error for view")
+	}
+	if !strings.Contains(err.Error(), "sessions") || !strings.Contains(err.Error(), "table") {
+		t.Fatalf("validateHermesSchema() error = %q, want mention missing sessions table", err.Error())
+	}
+}
+
+func TestValidateHermesSchemaReportsMissingMessagesColumn(t *testing.T) {
+	dbPath := createSQLiteDB(t, filepath.Join(t.TempDir(), "state.db"), sessionsTableSchema+`
 CREATE TABLE messages (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	session_id TEXT,
@@ -363,6 +437,43 @@ func openTestSQLiteDB(t *testing.T, path string) *sql.DB {
 	})
 	return db
 }
+
+const sessionsTableSchema = `
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY,
+	source TEXT,
+	model TEXT,
+	system_prompt TEXT,
+	started_at REAL,
+	ended_at REAL,
+	title TEXT,
+	input_tokens INTEGER,
+	output_tokens INTEGER,
+	reasoning_tokens INTEGER,
+	estimated_cost_usd REAL,
+	actual_cost_usd REAL
+);
+`
+
+const messagesTableSchema = `
+CREATE TABLE messages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id TEXT,
+	role TEXT,
+	content TEXT,
+	tool_call_id TEXT,
+	tool_calls TEXT,
+	tool_name TEXT,
+	timestamp REAL,
+	token_count INTEGER,
+	finish_reason TEXT,
+	reasoning TEXT,
+	reasoning_content TEXT,
+	reasoning_details TEXT,
+	codex_reasoning_items TEXT,
+	codex_message_items TEXT
+);
+`
 
 const hermesStateSchema = `
 CREATE TABLE IF NOT EXISTS sessions (
