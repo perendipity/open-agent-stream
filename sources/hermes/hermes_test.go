@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/open-agent-stream/open-agent-stream/pkg/sourceapi"
@@ -158,6 +159,56 @@ func TestDiscoverCommaSeparatedProfilesSkipsInvalidProfileNames(t *testing.T) {
 	}
 	assertArtifact(t, artifacts[0], "default", defaultDB, root)
 	assertArtifact(t, artifacts[1], "valid", validDB, root)
+}
+
+func TestDiscoverSkipsImplicitSymlinkedStateDB(t *testing.T) {
+	root := t.TempDir()
+	outsideDB := createStateDB(t, filepath.Join(t.TempDir(), "state.db"))
+	if err := os.Symlink(outsideDB, filepath.Join(root, "state.db")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	artifacts, err := New().Discover(context.Background(), sourceapi.Config{Root: root})
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("Discover() returned %d artifacts, want 0: %#v", len(artifacts), artifacts)
+	}
+}
+
+func TestDiscoverExplicitDBPathAllowsSymlink(t *testing.T) {
+	root := t.TempDir()
+	outsideDB := createStateDB(t, filepath.Join(t.TempDir(), "state.db"))
+	linkPath := filepath.Join(root, "explicit.db")
+	if err := os.Symlink(outsideDB, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	artifacts, err := New().Discover(context.Background(), sourceapi.Config{
+		Root:    root,
+		Options: map[string]string{"db_path": linkPath},
+	})
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("Discover() returned %d artifacts, want 1: %#v", len(artifacts), artifacts)
+	}
+	assertArtifact(t, artifacts[0], "default", linkPath, root)
+}
+
+func TestReadReturnsExplicitUnimplementedError(t *testing.T) {
+	_, checkpoint, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{}, sourceapi.Checkpoint{Cursor: "cursor-1"})
+	if err == nil {
+		t.Fatal("Read() error = nil, want explicit unimplemented error")
+	}
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("Read() error = %q, want not implemented", err.Error())
+	}
+	if checkpoint.Cursor != "cursor-1" {
+		t.Fatalf("Read() checkpoint cursor = %q, want cursor-1", checkpoint.Cursor)
+	}
 }
 
 func createStateDB(t *testing.T, path string) string {

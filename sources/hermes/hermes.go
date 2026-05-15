@@ -3,6 +3,7 @@ package hermes
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -45,7 +46,7 @@ func discoverDBArtifacts(root string, options map[string]string) ([]sourceapi.Ar
 	}
 
 	if dbPath := strings.TrimSpace(options["db_path"]); dbPath != "" {
-		artifact, ok, err := artifactForDB(resolvedRoot, "default", expandPath(dbPath))
+		artifact, ok, err := artifactForDB(resolvedRoot, "default", expandPath(dbPath), false)
 		if err != nil || !ok {
 			return nil, err
 		}
@@ -53,7 +54,7 @@ func discoverDBArtifacts(root string, options map[string]string) ([]sourceapi.Ar
 	}
 
 	var artifacts []sourceapi.Artifact
-	if artifact, ok, err := artifactForDB(resolvedRoot, "default", filepath.Join(resolvedRoot, "state.db")); err != nil {
+	if artifact, ok, err := artifactForDB(resolvedRoot, "default", filepath.Join(resolvedRoot, "state.db"), true); err != nil {
 		return nil, err
 	} else if ok {
 		artifacts = append(artifacts, artifact)
@@ -75,7 +76,7 @@ func discoverDBArtifacts(root string, options map[string]string) ([]sourceapi.Ar
 				continue
 			}
 			path := filepath.Join(resolvedRoot, "profiles", profile, "state.db")
-			artifact, ok, err := artifactForDB(resolvedRoot, profile, path)
+			artifact, ok, err := artifactForDB(resolvedRoot, profile, path, true)
 			if err != nil {
 				return nil, err
 			}
@@ -94,7 +95,7 @@ func discoverDBArtifacts(root string, options map[string]string) ([]sourceapi.Ar
 			}
 			seen[profile] = struct{}{}
 			path := filepath.Join(resolvedRoot, "profiles", profile, "state.db")
-			artifact, ok, err := artifactForDB(resolvedRoot, profile, path)
+			artifact, ok, err := artifactForDB(resolvedRoot, profile, path, true)
 			if err != nil {
 				return nil, err
 			}
@@ -107,16 +108,31 @@ func discoverDBArtifacts(root string, options map[string]string) ([]sourceapi.Ar
 	return artifacts, nil
 }
 
-func artifactForDB(root, profile, path string) (sourceapi.Artifact, bool, error) {
+func artifactForDB(root, profile, path string, enforceUnderRoot bool) (sourceapi.Artifact, bool, error) {
 	resolvedPath := expandPath(path)
-	info, err := os.Stat(resolvedPath)
+	info, err := os.Lstat(resolvedPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return sourceapi.Artifact{}, false, nil
 		}
 		return sourceapi.Artifact{}, false, err
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		if enforceUnderRoot {
+			return sourceapi.Artifact{}, false, nil
+		}
+		info, err = os.Stat(resolvedPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return sourceapi.Artifact{}, false, nil
+			}
+			return sourceapi.Artifact{}, false, err
+		}
+	}
 	if info.IsDir() {
+		return sourceapi.Artifact{}, false, nil
+	}
+	if enforceUnderRoot && !isPathWithinRoot(root, resolvedPath) {
 		return sourceapi.Artifact{}, false, nil
 	}
 	if profile == "" {
@@ -134,7 +150,7 @@ func artifactForDB(root, profile, path string) (sourceapi.Artifact, bool, error)
 }
 
 func expandPath(path string) string {
-	path = os.ExpandEnv(strings.TrimSpace(path))
+	path = strings.TrimSpace(path)
 	if strings.HasPrefix(path, "~") {
 		home, err := os.UserHomeDir()
 		if err == nil {
@@ -168,6 +184,14 @@ func isProfileName(profile string) bool {
 	return profile != "" && profile != "." && profile != ".." && filepath.Base(profile) == profile && !strings.ContainsAny(profile, `/\\`)
 }
 
-func (a *Adapter) Read(ctx context.Context, cfg sourceapi.Config, artifact sourceapi.Artifact, checkpoint sourceapi.Checkpoint) ([]schema.RawEnvelope, sourceapi.Checkpoint, error) {
-	return nil, checkpoint, nil
+func isPathWithinRoot(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func (a *Adapter) Read(_ context.Context, _ sourceapi.Config, _ sourceapi.Artifact, checkpoint sourceapi.Checkpoint) ([]schema.RawEnvelope, sourceapi.Checkpoint, error) {
+	return nil, checkpoint, fmt.Errorf("hermes_local read is not implemented yet; this adapter currently supports discovery only")
 }
