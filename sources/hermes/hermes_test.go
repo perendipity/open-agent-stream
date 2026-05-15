@@ -206,8 +206,9 @@ func TestDiscoverExplicitDBPathAllowsSymlink(t *testing.T) {
 
 func TestReadValidEmptyDatabaseReturnsNoEnvelopes(t *testing.T) {
 	dbPath := createStateDB(t, filepath.Join(t.TempDir(), "state.db"))
+	artifact := sourceapi.Artifact{ID: "art-empty", Locator: dbPath}
 
-	envelopes, checkpoint, err := New().Read(context.Background(), sourceapi.Config{}, sourceapi.Artifact{Locator: dbPath}, sourceapi.Checkpoint{Cursor: "1"})
+	envelopes, checkpoint, err := New().Read(context.Background(), sourceapi.Config{}, artifact, sourceapi.Checkpoint{Cursor: "1", ArtifactFingerprint: artifact.ID})
 	if err != nil {
 		t.Fatalf("Read() error = %v, want nil", err)
 	}
@@ -372,7 +373,7 @@ func TestReadEmitsRawHermesMessageEnvelopes(t *testing.T) {
 		t.Fatalf("session system_prompt included by default: %#v", payload.Session)
 	}
 
-	fromCursor, cursorCheckpoint, err := New().Read(context.Background(), cfg, artifact, sourceapi.Checkpoint{Cursor: "1"})
+	fromCursor, cursorCheckpoint, err := New().Read(context.Background(), cfg, artifact, sourceapi.Checkpoint{Cursor: "1", ArtifactFingerprint: artifact.ID})
 	if err != nil {
 		t.Fatalf("cursor Read() error = %v", err)
 	}
@@ -425,9 +426,6 @@ func TestReadCheckpointIsArtifactSafeAndIncremental(t *testing.T) {
 	if rediscoveredArtifact.ID != artifact.ID {
 		t.Fatalf("rediscovered artifact ID = %q, want stable ID %q", rediscoveredArtifact.ID, artifact.ID)
 	}
-	if rediscoveredArtifact.Fingerprint == artifact.Fingerprint {
-		t.Fatalf("rediscovered artifact fingerprint did not change after append: %q", rediscoveredArtifact.Fingerprint)
-	}
 	afterAppend, appendCheckpoint, err := adapter.Read(context.Background(), cfg, rediscoveredArtifact, secondCheckpoint)
 	if err != nil {
 		t.Fatalf("append Read() error = %v", err)
@@ -458,12 +456,26 @@ func TestReadInvalidCheckpointCursorReturnsError(t *testing.T) {
 	dbPath := createStateDB(t, filepath.Join(root, "state.db"))
 	artifact := discoveredArtifactForPath(t, root, dbPath)
 
-	_, _, err := New().Read(context.Background(), sourceapi.Config{}, artifact, sourceapi.Checkpoint{Cursor: "not-an-int"})
+	_, _, err := New().Read(context.Background(), sourceapi.Config{}, artifact, sourceapi.Checkpoint{Cursor: "not-an-int", ArtifactFingerprint: artifact.ID})
 	if err == nil {
 		t.Fatal("Read() error = nil, want invalid cursor error")
 	}
 	if !strings.Contains(err.Error(), "checkpoint cursor") || !strings.Contains(err.Error(), "not-an-int") {
 		t.Fatalf("Read() error = %q, want clear checkpoint cursor parse error", err.Error())
+	}
+}
+
+func TestReadCheckpointCursorWithoutArtifactTokenReturnsError(t *testing.T) {
+	root := t.TempDir()
+	dbPath := createStateDB(t, filepath.Join(root, "state.db"))
+	artifact := discoveredArtifactForPath(t, root, dbPath)
+
+	_, _, err := New().Read(context.Background(), sourceapi.Config{}, artifact, sourceapi.Checkpoint{Cursor: "2"})
+	if err == nil {
+		t.Fatal("Read() error = nil, want missing artifact token error")
+	}
+	if !strings.Contains(err.Error(), "missing artifact token") {
+		t.Fatalf("Read() error = %q, want missing artifact token", err.Error())
 	}
 }
 

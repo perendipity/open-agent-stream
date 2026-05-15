@@ -337,9 +337,13 @@ func (a *Adapter) Read(ctx context.Context, cfg sourceapi.Config, artifact sourc
 
 	lastMessageID := int64(0)
 	artifactCheckpointToken := artifact.ID
-	useCheckpointCursor := checkpoint.ArtifactFingerprint == "" || (artifactCheckpointToken != "" && checkpoint.ArtifactFingerprint == artifactCheckpointToken)
-	if useCheckpointCursor && strings.TrimSpace(checkpoint.Cursor) != "" {
-		parsed, err := strconv.ParseInt(strings.TrimSpace(checkpoint.Cursor), 10, 64)
+	checkpointCursor := strings.TrimSpace(checkpoint.Cursor)
+	useCheckpointCursor := checkpointCursor != "" && artifactCheckpointToken != "" && checkpoint.ArtifactFingerprint == artifactCheckpointToken
+	if checkpointCursor != "" && checkpoint.ArtifactFingerprint == "" {
+		return nil, checkpoint, fmt.Errorf("Hermes checkpoint cursor %q is missing artifact token", checkpoint.Cursor)
+	}
+	if useCheckpointCursor {
+		parsed, err := strconv.ParseInt(checkpointCursor, 10, 64)
 		if err != nil {
 			return nil, checkpoint, fmt.Errorf("parse Hermes checkpoint cursor %q as message id: %w", checkpoint.Cursor, err)
 		}
